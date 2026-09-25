@@ -30,6 +30,7 @@ Ne jamais ajouter au dépôt de données de ventes réelles, de jeton ou de mot 
 - **Construction** : Next.js (`netlify.toml`), Node 22.
 - **Base de données** : Netlify Database (PostgreSQL), créée par le paquet `@netlify/database`. Les migrations sont dans `netlify/database/migrations/`.
 - **Connexion** : un seul propriétaire, avec la variable secrète `APP_PASSWORD` (12 caractères minimum). Le cookie de session est signé avec une clé dérivée du mot de passe.
+- **Shopify** (facultatif) : variable secrète `SHOPIFY_ADMIN_ACCESS_TOKEN`, le jeton de l’app personnalisée « Outil commandes CAG » (portées `read_products` et `read_inventory`). Le bouton « Lire le catalogue dans Shopify » lit toutes les variantes, par pages de 250 : marque, produit, variante, code-barres et coût unitaire. Lecture seule : l’app n’écrit rien dans Shopify. Sans jeton, l’export CSV des produits reste possible.
 - **Jev** : il faut activer l’AI Gateway sur le site. Netlify fournit les accès aux fonctions, sans clé à saisir; les appels sont facturés en crédits Netlify. Les requêtes partent de `app/api/metro/route.js`, par lots de 20 lignes.
 
 ## Développement

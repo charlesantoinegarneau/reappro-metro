@@ -7,6 +7,7 @@ import {DEFAULT_SETTINGS,planLines,planWeek,validSettings} from '@/lib/metro/pla
 import {CHUNK,decideLines} from '@/lib/metro/jev';
 import {validOrder} from '@/lib/metro/order';
 import {validCatalog} from '@/lib/metro/catalog';
+import {catalogPage,shopifyClient} from '@/lib/metro/shopify';
 export const dynamic='force-dynamic';
 export const maxDuration=60;
 const json=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
@@ -22,7 +23,7 @@ export async function GET(req){
  try{const db=database(),today=localDate(new Date()),week=planWeek(today),data=await sales(db,user);
   const [saved,known]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user)]);
   const weeks=[...new Set(data.rows.map(r=>r.week))].sort();
-  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)||null,count:weeks.length},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev()});
+  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)||null,count:weeks.length},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
  }catch{return json({error:'Données Metro indisponibles.'},503);}
 }
 export async function POST(req){
@@ -38,10 +39,16 @@ export async function POST(req){
    await db.prepare('INSERT INTO metro_sales(user_id,document,imported_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,JSON.stringify({rows:merged,files}),importedAt).run();
    return json({lines:rows.length,total:merged.length});
   }
+  // One page of the Shopify catalog; the browser chains the pages then saves them with 'catalog'.
+  if(body.action==='shopify-page'){
+   if(body.cursor!==null&&body.cursor!==undefined&&(typeof body.cursor!=='string'||body.cursor.length>500))return json({error:'Page invalide.'},400);
+   try{return json(await catalogPage(shopifyClient(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN),body.cursor||null));}catch(e){return json({error:e.message},502);}
+  }
   if(body.action==='catalog'){
    let items;try{items=validCatalog(body.items);}catch(e){return json({error:e.message},400);}
    const importedAt=new Date().toISOString();
-   await db.prepare('INSERT INTO metro_catalog(user_id,document,imported_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,JSON.stringify({items}),importedAt).run();
+   const source=body.source==='shopify'?'shopify':'export';
+   await db.prepare('INSERT INTO metro_catalog(user_id,document,imported_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,JSON.stringify({items,source}),importedAt).run();
    return json({count:Object.keys(items).length,priced:Object.values(items).filter(v=>v.cost!=null).length});
   }
   if(body.action==='decide'){

@@ -158,3 +158,23 @@ test('marques : déduites de la description Metro, ou du catalogue Shopify par c
  const a=net.find(l=>l.metro==='A');assert.deepEqual(a.network,{metros:2,rhythm:5});
  const lignes=jevRequest([a],S).state.lignes.l0;assert.equal(lignes.cout_unitaire,24.5);assert.deepEqual(lignes.valeur_options,{aucune:0,reduite:24.5,regle:49,hausse:73.5});assert.deepEqual(lignes.rythme_reseau,{autres_metros:2,unites_par_semaine:5});
  assert.equal(jevRequest([lines[0]],S).state.lignes.l0.cout_unitaire,null)});
+
+test('catalogue lu dans Shopify : pages de variantes, code-barres, coût, erreurs d’accès',async()=>{
+ const {catalogPage,shopifyClient,CATALOG_QUERY}=await import('../lib/metro/shopify.js');
+ const calls=[];const page=(nodes,next)=>({data:{productVariants:{nodes,pageInfo:{hasNextPage:!!next,endCursor:next}}}});
+ const replies=[{status:429},{status:200,body:{errors:[{extensions:{code:'THROTTLED'}}]}},{status:200,body:page([
+  {barcode:'0628176604411',selectedOptions:[{name:'Saveur',value:'Vanille'},{name:'Format',value:'454 g'}],product:{title:'Protéine Whey',vendor:'Nova Pharma'},inventoryItem:{unitCost:{amount:'24.50',currencyCode:'CAD'}}},
+  {barcode:'123',selectedOptions:[{name:'Title',value:'Default Title'}],product:{title:'Shaker',vendor:'Shop Santé'},inventoryItem:{unitCost:null}},
+  {barcode:'',selectedOptions:[],product:{title:'Sans code',vendor:'X'},inventoryItem:null}],'c2')}];
+ const request=async(url,init)=>{calls.push({url,init});const r=replies.shift();return {ok:r.status<300,status:r.status,json:async()=>r.body};};
+ const gql=shopifyClient('jeton-de-test',{request,wait:async()=>{}});
+ const {items,next}=await catalogPage(gql,'c1');
+ assert.equal(calls.length,3,'429 puis THROTTLED : nouvelles tentatives');
+ assert.equal(calls[2].url,'https://shopsantesupplements.myshopify.com/admin/api/2026-07/graphql.json');
+ assert.equal(calls[2].init.headers['X-Shopify-Access-Token'],'jeton-de-test');
+ assert.deepEqual(JSON.parse(calls[2].init.body),{query:CATALOG_QUERY,variables:{cursor:'c1'}});
+ assert.equal(next,'c2');
+ assert.deepEqual(items,{'628176604411':{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5},'123':{brand:'Shop Santé',product:'Shaker',variant:'',cost:null}});
+ await assert.rejects(shopifyClient(null)(CATALOG_QUERY),/SHOPIFY_ADMIN_ACCESS_TOKEN/);
+ await assert.rejects(shopifyClient('x',{request:async()=>({ok:false,status:401})})(CATALOG_QUERY),/jeton révoqué/);
+ await assert.rejects(shopifyClient('x',{request:async()=>({ok:true,status:200,json:async()=>({errors:[{extensions:{code:'ACCESS_DENIED'}}]})})})(CATALOG_QUERY),/portée/)});
