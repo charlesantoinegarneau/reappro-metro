@@ -17,8 +17,11 @@ Application privée pour la **commande hebdomadaire de chaque Metro**.
    - avec stock connu : couverture + délai × sécurité − stock, arrondi à la caisse supérieure.
 
    Rétro-test sur trois semaines de 2026 : la règle de Vanier commandait 39 % de plus que les ventes ; la règle ajustée tombe à environ 0 %.
+   - **Ruptures probables** : une semaine à zéro est écartée du rythme quand ce zéro était très improbable au rythme du produit (moins de 5 % de chances, à partir de 3 unités par semaine attendues). On parle de « BO » quand aucun Metro ne l’a vendu cette semaine-là (rupture chez le fournisseur), et de « rayon vide » quand seul ce Metro ne l’a pas vendu. Un BO la semaine dernière met la ligne « à vérifier ».
+   - **Produits nouveaux** : les semaines d’avant la première vente dans le réseau ne comptent pas.
 3. **Jev** (TypeSafe, via Netlify AI Gateway) : pour chaque ligne, il choisit entre *rien*, *une caisse de moins*, *la règle* et *une caisse de plus*, et donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Si Jev ne répond pas, la règle s’applique.
-4. **Validation** : les quantités sont modifiables. La commande est enregistrée par semaine et se télécharge en CSV, un fichier par Metro.
+4. **Classement et recherche** : la liste est classée par Marque > Produit > Variante. La marque est déduite de la description Metro, ou vient du catalogue Shopify (Produits → Exporter, CSV) quand on l’importe : marque, produit et variante exacts, rapprochés par code-barres. La barre de recherche filtre par marque, produit ou code-barres. Elle propose aussi les produits vendus ailleurs dans le réseau mais jamais à ce Metro, qu’on peut ajouter à la main.
+5. **Validation** : les quantités sont modifiables. La commande est enregistrée par semaine et se télécharge en CSV, un fichier par Metro.
 
 Ne jamais ajouter au dépôt de données de ventes réelles, de jeton ou de mot de passe.
 

@@ -86,7 +86,8 @@ test('Jev : une question « choice » par ligne, probabilités, confiance faible
  const {state,questions}=jevRequest(asked,S);
  assert.equal(Object.keys(questions).length,2);assert.equal(questions.l0.type,'choice');
  assert.deepEqual(Object.keys(questions[Object.keys(questions).find(k=>state.lignes[k].sku==='STEADY')].criteria),['aucune','reduite','regle','hausse']);
- assert.match(questions.l0.criteria.aucune,/^0 unité/);assert.equal(state.parametres.jours_couverts,7);assert.equal(state.lignes.l0.ventes_hebdo.length,12);
+ assert.match(questions.l0.criteria.aucune,/^0 unité/);assert.equal(state.parametres.jours_couverts,7);const steadyId=Object.keys(state.lignes).find(k=>state.lignes[k].sku==='STEADY'),newId=Object.keys(state.lignes).find(k=>state.lignes[k].sku==='NEW');
+ assert.equal(state.lignes[steadyId].ventes_hebdo.length,12);assert.equal(state.lignes[newId].ventes_hebdo.length,1,'semaines avant le lancement écartées');assert.deepEqual(state.lignes[steadyId].rupture_probable,Array(12).fill('non'));
  const jev=fakeJev(req=>Object.fromEntries(Object.keys(req.questions).map(k=>req.state.lignes[k].sku==='STEADY'
   ?[k,{type:'choice',choice:'hausse',confidence:.8,probabilities:{aucune:0,reduite:.05,regle:.15,hausse:.8}}]
   :[k,{type:'choice',choice:'regle',confidence:.45,probabilities:{aucune:.3,regle:.45,hausse:.25}}])));
@@ -97,7 +98,7 @@ test('Jev : une question « choice » par ligne, probabilités, confiance faible
  assert.deepEqual([by.OLD.qty,by.OLD.source,by.OLD.review],[0,'regle',false],'rien vendu : pas de question');
  // Jev unavailable or an answer outside the options: the rule applies, marked for review.
  const down=await decideLines({systemOne:async()=>{throw Error('panne');}},lines,S);
- assert.deepEqual(down.filter(d=>d.source==='regle'&&d.review).map(d=>[d.qty,d.note]),[[1,'panne'],[12,'panne']]);
+ assert.deepEqual(down.filter(d=>d.source==='regle'&&d.review).map(d=>[d.qty,d.note]),[[6,'panne'],[12,'panne']]);
  const none=await decideLines(null,lines,S);assert.match(none[0].note,/pas configuré/);
  const odd=await decideLines(fakeJev(req=>Object.fromEntries(Object.keys(req.questions).map(k=>[k,{type:'choice',choice:'autre',confidence:1,probabilities:{}}]))),lines,S);
  assert.ok(odd.filter(d=>Object.keys(lines.find(l=>l.key===d.key).candidates).length>1).every(d=>d.source==='regle'&&d.review))});
@@ -111,3 +112,44 @@ test('commande : validation, CSV par Metro, enregistrement par semaine',async()=
  await save(valid);await save({...valid,lines:valid.lines.slice(0,1)});
  assert.equal(JSON.parse((await t.db.prepare('SELECT document FROM metro_orders WHERE user_id=? AND week=?').bind('owner','2026-10-01').first()).document).lines.length,1);
  await t.db.prepare('INSERT INTO metro_sales(user_id,document,imported_at) VALUES(?,?,?)').bind('owner','{"rows":[]}','x').run();await t.close()});
+
+test('ruptures probables : BO réseau, rayon vide au Metro, semaines avant lancement',()=>{
+ const W=WEEKS.slice(-8);
+ const rows=[
+  // Sold ~6/week at both Metros; nobody sold it in week 5: network stock-out (BO).
+  ...W.flatMap((w,i)=>[row('A','BO',w,i===5?0:6),row('B','BO',w,i===5?0:5)]),
+  // Only Metro A missed week 3 while B kept selling: empty shelf at A.
+  ...W.flatMap((w,i)=>[row('A','SHELF',w,i===3?0:5),row('B','SHELF',w,4)]),
+  // Slow seller (under 1/week): its zeros are normal.
+  ...W.map((w,i)=>row('A','SLOW',w,i%3===0?1:0)),
+  // Launched in week 6 everywhere: earlier weeks are not part of its history.
+  ...W.map((w,i)=>row('A','LAUNCH',w,i>=6?4:0))];
+ const lines=planLines(rows,S,TODAY),get=(m,s)=>lines.find(l=>l.metro===m&&l.sku===s);
+ const bo=get('A','BO');assert.equal(bo.history[5].rupture,'reseau');assert.equal(bo.v12,6,'la semaine de BO n’abaisse pas le rythme');assert.equal(bo.ruptures,1);assert.equal(bo.boNow,false);
+ assert.equal(get('A','SHELF').history[3].rupture,'magasin');assert.equal(get('B','SHELF').ruptures,0);
+ assert.equal(get('A','SLOW').ruptures,0);
+ const launch=get('A','LAUNCH');assert.equal(launch.history.length,2);assert.equal(launch.v12,4);
+ // A stock-out in the last week everywhere: still in back order.
+ const now=planLines([...W.map((w,i)=>row('A','X',w,i===7?0:8)),...W.map((w,i)=>row('B','X',w,i===7?0:8))],S,TODAY);
+ assert.equal(now[0].boNow,true)});
+
+test('marques : déduites de la description Metro, ou du catalogue Shopify par code-barres',async()=>{
+ const {describe,identify,parseShopifyExport}=await import('../lib/metro/catalog.js');
+ assert.deepEqual(describe('SS NOVAPHARM JOUVENCE FRUIT DRAGON 355ML'),{brand:'Nova Pharma',product:'JOUVENCE FRUIT DRAGON 355ML',variant:''});
+ assert.equal(describe('SS GO NUTR GO KRISP.TIRAMISU 55GR').brand,'Go Nutrition');
+ assert.equal(describe('SS BEHYBOISHYDRA SACH.INDMELONEAU').brand,'Behy');
+ assert.equal(describe('SSFITCOOK SAUCE').brand,'Fitcook');
+ assert.equal(describe("SS JUJU'S PÂTE À BISCUIT 60G").product,'PÂTE À BISCUIT 60G');
+ assert.equal(describe('SS ATPX TEST').brand,'Atpx','une abréviation courte doit finir le mot');
+ const csv=['Handle,Title,Body (HTML),Vendor,Option1 Name,Option1 Value,Option2 Name,Option2 Value,Variant Barcode',
+  'whey,Protéine Whey,"<p>Texte,\nsur deux lignes</p>",Nova Pharma,Saveur,Vanille,Format,454 g,0628176604411',
+  'whey,,,,,Chocolat,,454 g,628176604412','shaker,Shaker,,Shop Santé,Title,Default Title,,,123'].join('\n');
+ const items=parseShopifyExport(csv);
+ assert.deepEqual(items['628176604411'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g'});
+ assert.deepEqual(items['628176604412'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Chocolat / 454 g'});
+ assert.equal(items['123'].variant,'');
+ assert.deepEqual(identify('00628176604411','SS NOVA PHARMA X',items),items['628176604411'],'zéros de tête ignorés');
+ assert.throws(()=>parseShopifyExport('a,b\n1,2'),/export de produits Shopify/);
+ // The sheet is sorted Marque > Produit > Variante.
+ const lines=planLines([row('A','628176604412',WEEKS[11],2),row('A','628176604411',WEEKS[11],2),row('A','9',WEEKS[11],1,{product:'SS ATP OMÉGA'})],S,TODAY,items);
+ assert.deepEqual(lines.map(l=>[l.brand,l.variant]),[['ATP',''],['Nova Pharma','Chocolat / 454 g'],['Nova Pharma','Vanille / 454 g']])});
