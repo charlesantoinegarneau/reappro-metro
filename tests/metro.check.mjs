@@ -141,15 +141,20 @@ test('marques : déduites de la description Metro, ou du catalogue Shopify par c
  assert.equal(describe('SSFITCOOK SAUCE').brand,'Fitcook');
  assert.equal(describe("SS JUJU'S PÂTE À BISCUIT 60G").product,'PÂTE À BISCUIT 60G');
  assert.equal(describe('SS ATPX TEST').brand,'Atpx','une abréviation courte doit finir le mot');
- const csv=['Handle,Title,Body (HTML),Vendor,Option1 Name,Option1 Value,Option2 Name,Option2 Value,Variant Barcode',
-  'whey,Protéine Whey,"<p>Texte,\nsur deux lignes</p>",Nova Pharma,Saveur,Vanille,Format,454 g,0628176604411',
-  'whey,,,,,Chocolat,,454 g,628176604412','shaker,Shaker,,Shop Santé,Title,Default Title,,,123'].join('\n');
+ const csv=['Handle,Title,Body (HTML),Vendor,Option1 Name,Option1 Value,Option2 Name,Option2 Value,Variant Barcode,Cost per item',
+  'whey,Protéine Whey,"<p>Texte,\nsur deux lignes</p>",Nova Pharma,Saveur,Vanille,Format,454 g,0628176604411,24.50',
+  'whey,,,,,Chocolat,,454 g,628176604412,','shaker,Shaker,,Shop Santé,Title,Default Title,,,123,4'].join('\n');
  const items=parseShopifyExport(csv);
- assert.deepEqual(items['628176604411'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g'});
- assert.deepEqual(items['628176604412'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Chocolat / 454 g'});
- assert.equal(items['123'].variant,'');
+ assert.deepEqual(items['628176604411'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5});
+ assert.deepEqual(items['628176604412'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Chocolat / 454 g',cost:null},'coût absent : inconnu, pas zéro');
+ assert.equal(items['123'].variant,'');assert.equal(items['123'].cost,4);
  assert.deepEqual(identify('00628176604411','SS NOVA PHARMA X',items),items['628176604411'],'zéros de tête ignorés');
  assert.throws(()=>parseShopifyExport('a,b\n1,2'),/export de produits Shopify/);
  // The sheet is sorted Marque > Produit > Variante.
  const lines=planLines([row('A','628176604412',WEEKS[11],2),row('A','628176604411',WEEKS[11],2),row('A','9',WEEKS[11],1,{product:'SS ATP OMÉGA'})],S,TODAY,items);
- assert.deepEqual(lines.map(l=>[l.brand,l.variant]),[['ATP',''],['Nova Pharma','Chocolat / 454 g'],['Nova Pharma','Vanille / 454 g']])});
+ assert.deepEqual(lines.map(l=>[l.brand,l.variant]),[['ATP',''],['Nova Pharma','Chocolat / 454 g'],['Nova Pharma','Vanille / 454 g']]);
+ // Jev sees the unit cost, the value of each option and the product's rhythm at the other Metros.
+ const net=planLines([row('A','628176604411',WEEKS[11],2),row('B','628176604411',WEEKS[11],6),row('C','628176604411',WEEKS[11],4)],S,TODAY,items);
+ const a=net.find(l=>l.metro==='A');assert.deepEqual(a.network,{metros:2,rhythm:5});
+ const lignes=jevRequest([a],S).state.lignes.l0;assert.equal(lignes.cout_unitaire,24.5);assert.deepEqual(lignes.valeur_options,{aucune:0,reduite:24.5,regle:49,hausse:73.5});assert.deepEqual(lignes.rythme_reseau,{autres_metros:2,unites_par_semaine:5});
+ assert.equal(jevRequest([lines[0]],S).state.lignes.l0.cout_unitaire,null)});
