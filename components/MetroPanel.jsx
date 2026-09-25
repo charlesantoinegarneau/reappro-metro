@@ -63,6 +63,15 @@ export default function MetroPanel(){
    setNotice(`Catalogue Shopify importé : ${j.count} variantes avec code-barres, dont ${j.priced} avec un coût. Marques, produits, variantes et coûts viennent maintenant de Shopify quand le code-barres correspond; relancez Jev pour qu’il en tienne compte.`);await load();
   }catch(e){setError(e.message);}finally{setBusy('');}
  }
+ // Whole catalog from Shopify, page by page (about 21 pages of 250 variants).
+ async function syncShopify(){
+  setBusy('shopify');setError('');setNotice('');
+  try{let cursor=null,items={},pages=0;
+   do{const j=await api('',{action:'shopify-page',cursor});Object.assign(items,j.items);cursor=j.next;pages++;setProgress({done:Object.keys(items).length,total:null,pages});}while(cursor&&pages<200);
+   const j=await api('',{action:'catalog',items,source:'shopify'});
+   setNotice(`Catalogue lu dans Shopify : ${j.count} variantes avec code-barres, dont ${j.priced} avec un coût. Relancez Jev pour qu’il en tienne compte.`);await load();
+  }catch(e){setError(e.message);}finally{setBusy('');setProgress(null);}
+ }
  async function decide(){
   setBusy('jev');setError('');setNotice('');
   const todo=planned.filter(l=>!scope||l.metro===scope),next={...decisions};
@@ -80,6 +89,7 @@ export default function MetroPanel(){
    setNotice('Commande de la semaine du '+dateLabel(data.week)+' enregistrée.');setData(d=>({...d,order:{...(d.order||{}),savedAt:j.savedAt}}));
   }catch(e){setError(e.message);}finally{setBusy('');}
  }
+ const shopifyButton=data?.shopify&&<button className="quiet-button" onClick={syncShopify} disabled={!!busy}>{busy==='shopify'?`Lecture Shopify… ${progress?.done??0} variantes`:data?.catalog?.source==='shopify'?'Actualiser le catalogue Shopify':'Lire le catalogue dans Shopify'}</button>;
  const catalogPicker=<label className={'quiet-button monthly-upload'+(busy==='catalog'?' busy':'')}>{busy==='catalog'?'Lecture…':data?.catalog?'Mettre à jour le catalogue Shopify':'Importer le catalogue Shopify'}<input type="file" accept=".csv,text/csv" hidden disabled={!!busy} onChange={e=>{uploadCatalog(e.target.files?.[0]);e.target.value='';}}/></label>;
  const picker=<label className={'quiet-button monthly-upload'+(busy==='import'?' busy':'')}>{busy==='import'?'Lecture…':lines.length?'Importer des ventes':'Importer un fichier de ventes'}<input type="file" multiple hidden disabled={!!busy} onChange={e=>{upload([...(e.target.files||[])]);e.target.value='';}}/></label>;
  const review=l=>decisions[l.key]?.review||l.urgency!=='normale'||l.boNow;
@@ -90,7 +100,7 @@ export default function MetroPanel(){
  const totals=metros.map(m=>{const list=lines.filter(l=>l.metro===m);return {metro:m,lines:list.filter(l=>qtyOf(l)>0).length,units:list.reduce((n,l)=>n+qtyOf(l),0),review:list.filter(l=>decisions[l.key]?.review).length,bo:list.filter(l=>l.boNow).length,value:list.reduce((n,l)=>n+(l.cost??0)*qtyOf(l),0),priced:list.filter(l=>qtyOf(l)>0).every(l=>l.cost!=null),decided:list.filter(l=>decisions[l.key]).length,total:list.length};});
  const setting=(k,v)=>setSettings(s=>({...s,[k]:v}));
  return <section className="comparison metro-panel" id="metro">
-  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaines){data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, importé le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{lines.length>0&&<span className="metro-imports">{picker}{catalogPicker}</span>}</div>
+  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaines){data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify ({data.catalog.source==='shopify'?'lu dans Shopify':'export CSV'}) : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, mis à jour le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{lines.length>0&&<span className="metro-imports">{picker}{shopifyButton||catalogPicker}</span>}</div>
   {error&&<p role="alert" className="alert">{error}</p>}{notice&&<p role="status" className="demo">{notice}</p>}
   {data&&!lines.length&&<div className="monthly-empty"><p>Importez les rapports « Ventes Shop Santé » reçus de Metro chaque jeudi (fichiers ZRT_ZMPOSJ21_…CSV) : vous pouvez en sélectionner plusieurs à la fois, toutes semaines et tous Metros confondus. Tout autre fichier avec une ligne par Metro, produit et date est aussi accepté.</p>{picker}</div>}
   {lines.length>0&&<>
