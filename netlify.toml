@@ -1,4 +1,6 @@
-# Next.js on Netlify: the Next.js runtime is detected automatically.
+# Next.js on Netlify. The runtime is declared explicitly: this project was
+# created before the app existed, so Netlify did not install it on its own
+# (without it, no server function is deployed and every page is a 404).
 # Netlify Database migrations (netlify/database/migrations) run before publishing.
 [build]
   command = "npm run build"
@@ -6,3 +8,6 @@
 
 [build.environment]
   NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
