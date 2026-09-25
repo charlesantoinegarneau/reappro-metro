@@ -83,3 +83,4 @@
 .metro-elsewhere{border:1px dashed var(--line);border-radius:9px;background:#fff;padding:14px 16px;margin:12px 0}.metro-elsewhere h3{font-size:15px;margin:0 0 8px}.metro-elsewhere ul{list-style:none;margin:0;padding:0}.metro-elsewhere li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-top:1px solid #eef2ef}.metro-elsewhere li small{display:block}
 .metro-cost{display:block;font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap}
 .metro-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px}.metro-min{flex-direction:row;align-items:center;gap:8px;font-weight:500}.metro-min input{width:72px;min-height:36px;padding:5px 8px;text-align:right}.metro-min .quiet-button{min-height:30px;padding:0}
+.metro-filtered{font-style:normal;font-size:11px;font-weight:600;color:#9b6516;background:#fff5e6;border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
