@@ -1,6 +1,6 @@
 'use client';
 import {useEffect,useMemo,useState} from 'react';
-import {readSalesFile} from '@/lib/metro/sales';
+import {combineFiles,readSalesFile} from '@/lib/metro/sales';
 import {orderCsv} from '@/lib/metro/order';
 
 const CHUNK=20;
@@ -16,7 +16,7 @@ function download(name,text){const url=URL.createObjectURL(new Blob(['﻿'+text]
 // Twelve weeks of sales as small bars, oldest first.
 function Spark({history}){
  const max=Math.max(1,...history.map(h=>h.units)),w=5,gap=2;
- return <svg className="metro-spark" width={history.length*(w+gap)} height="22" role="img" aria-label={'Ventes par semaine : '+history.map(h=>h.units).join(', ')}>
+ return <svg className="metro-spark" width={history.length*(w+gap)} height="22" role="img" aria-label={'Ventes par semaine : '+history.map(h=>h.units+(h.days<7?' ('+h.days+' j)':'')).join(', ')}>
   {history.map((h,i)=><rect key={h.week} x={i*(w+gap)} y={22-Math.max(1,h.units/max*22)} width={w} height={Math.max(1,h.units/max*22)} rx="1" fill={i>=history.length-4?'#197657':'#a9c2b3'}/>)}
  </svg>;
 }
@@ -36,11 +36,13 @@ export default function MetroPanel(){
  useEffect(()=>{load();},[]);
  const lines=data?.lines||[],metros=useMemo(()=>[...new Set(lines.map(l=>l.metro))],[lines]);
  const qtyOf=l=>final[l.key]??decisions[l.key]?.qty??l.base;
- async function upload(file){
-  if(!file)return;setBusy('import');setError('');setNotice('');
-  try{const {rows,skipped,hasStock}=await readSalesFile(file.name,await file.arrayBuffer());
-   const j=await api('',{action:'import',rows,filename:file.name});
-   setNotice(`${j.lines} lignes Metro × produit × semaine importées${skipped?` · ${skipped} lignes illisibles ignorées`:''}${hasStock?'':' · pas de colonne de stock : les quantités remplacent les ventes'}.`);await load();
+ async function upload(files){
+  if(!files.length)return;setBusy('import');setError('');setNotice('');
+  try{const results=[];
+   for(const file of files){try{results.push(await readSalesFile(file.name,await file.arrayBuffer()));}catch(e){throw Error(file.name+' : '+e.message);}}
+   const rows=combineFiles(results),skipped=results.reduce((n,r)=>n+r.skipped,0),metros=[...new Set(rows.map(r=>r.metro))].sort(),weeks=[...new Set(rows.map(r=>r.week))].sort();
+   const j=await api('',{action:'import',rows,filename:files.length>1?files.length+' fichiers':files[0].name});
+   setNotice(`${files.length} fichier${files.length>1?'s':''} : ${metros.join(', ')} · ${weeks.length} semaine${weeks.length>1?'s':''} (${dateLabel(weeks[0])} au ${dateLabel(weeks.at(-1))}) · ${j.lines} lignes produit × semaine${skipped?` · ${skipped} lignes illisibles ignorées`:''}${results.some(r=>r.hasStock)?'':'. Stock en rayon inconnu : les quantités remplacent les ventes'}.`);await load();
   }catch(e){setError(e.message);}finally{setBusy('');}
  }
  async function decide(){
@@ -60,14 +62,14 @@ export default function MetroPanel(){
    setNotice('Commande de la semaine du '+dateLabel(data.week)+' enregistrée.');setData(d=>({...d,order:{...(d.order||{}),savedAt:j.savedAt}}));
   }catch(e){setError(e.message);}finally{setBusy('');}
  }
- const picker=<label className={'quiet-button monthly-upload'+(busy==='import'?' busy':'')}>{busy==='import'?'Lecture…':lines.length?'Importer des ventes':'Importer un fichier de ventes'}<input type="file" hidden disabled={!!busy} onChange={e=>{upload(e.target.files?.[0]);e.target.value='';}}/></label>;
+ const picker=<label className={'quiet-button monthly-upload'+(busy==='import'?' busy':'')}>{busy==='import'?'Lecture…':lines.length?'Importer des ventes':'Importer un fichier de ventes'}<input type="file" multiple hidden disabled={!!busy} onChange={e=>{upload([...(e.target.files||[])]);e.target.value='';}}/></label>;
  const shown=lines.filter(l=>l.metro===scope&&(!onlyReview||decisions[l.key]?.review||l.urgency!=='normale'));
  const totals=metros.map(m=>{const list=lines.filter(l=>l.metro===m);return {metro:m,lines:list.filter(l=>qtyOf(l)>0).length,units:list.reduce((n,l)=>n+qtyOf(l),0),review:list.filter(l=>decisions[l.key]?.review).length,decided:list.filter(l=>decisions[l.key]).length,total:list.length};});
  const setting=(k,v)=>setSettings(s=>({...s,[k]:v}));
  return <section className="comparison metro-panel" id="metro">
   <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaines){data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre.</p>}</div>{lines.length>0&&picker}</div>
   {error&&<p role="alert" className="alert">{error}</p>}{notice&&<p role="status" className="demo">{notice}</p>}
-  {data&&!lines.length&&<div className="monthly-empty"><p>Importez les ventes des Metros (Excel ou CSV) : une ligne par Metro, produit et date (ou semaine), avec les unités vendues. Une colonne de stock et une de format de caisse, si elles existent, rendent les quantités plus justes.</p>{picker}</div>}
+  {data&&!lines.length&&<div className="monthly-empty"><p>Importez les rapports « Ventes Shop Santé » reçus de Metro chaque jeudi (fichiers ZRT_ZMPOSJ21_…CSV) : vous pouvez en sélectionner plusieurs à la fois, toutes semaines et tous Metros confondus. Tout autre fichier avec une ligne par Metro, produit et date est aussi accepté.</p>{picker}</div>}
   {lines.length>0&&<>
    <div className="metro-controls">
     <label>Jours couverts<input type="number" min="1" max="28" step="1" value={settings.coverageDays} onChange={e=>setting('coverageDays',+e.target.value)}/></label>
@@ -80,7 +82,7 @@ export default function MetroPanel(){
    <div className="metro-cards">{totals.map(t=><button key={t.metro} aria-pressed={scope===t.metro} onClick={()=>setScope(t.metro)}><b>{t.metro}</b><span>{t.lines} produit{t.lines>1?'s':''} à commander · {t.units} unités</span><small>{t.decided?`Jev : ${t.decided}/${t.total}${t.review?` · ${t.review} à vérifier`:''}`:'Règle seulement'}</small></button>)}</div>
    <div className="metro-toolbar"><label className="metro-check"><input type="checkbox" checked={onlyReview} onChange={e=>setOnlyReview(e.target.checked)}/>À vérifier seulement</label>
     <span><button onClick={save} disabled={!!busy}>{busy==='save'?'Enregistrement…':'Enregistrer la commande'}</button> <button onClick={()=>download(`commande-${scope.replace(/\W+/g,'-')}-${data.week}.csv`,orderCsv(lines.map(l=>({...l,qty:qtyOf(l)})),scope))} disabled={!!busy}>Télécharger ({scope})</button></span></div>
-   <div className="table-scroll"><table className="metro-table"><thead><tr><th scope="col">Produit</th><th scope="col">12 semaines<small>vert : 4 dernières</small></th><th scope="col">Rythme<small>/ sem. (4 · 12)</small></th><th scope="col">Stock</th><th scope="col">Règle</th><th scope="col">Jev<small>choix · confiance</small></th><th scope="col">À commander</th></tr></thead>
+   <div className="table-scroll"><table className="metro-table"><thead><tr><th scope="col">Produit</th><th scope="col">Semaines<small>vert : 4 dernières</small></th><th scope="col">Rythme<small>/ sem. (4 dern. · toutes)</small></th><th scope="col">Stock</th><th scope="col">Règle</th><th scope="col">Jev<small>choix · confiance</small></th><th scope="col">À commander</th></tr></thead>
     <tbody>{shown.map(l=>{const d=decisions[l.key],q=qtyOf(l);return <tr key={l.key} className={d?.review||l.urgency!=='normale'?'metro-review':''}>
      <th scope="row">{l.product||l.sku}<small className="metro-sku">{l.sku}{l.pack>1?` · caisse de ${l.pack}`:''}</small></th>
      <td><Spark history={l.history}/></td>
@@ -91,7 +93,7 @@ export default function MetroPanel(){
      <td><input className="metro-qty" type="number" min="0" step={l.pack} value={q} aria-label={'Quantité '+(l.product||l.sku)} onChange={e=>setFinal(f=>({...f,[l.key]:Math.max(0,Math.round(+e.target.value||0))}))}/></td>
     </tr>;})}</tbody></table></div>
    {!shown.length&&<p className="footnote">Aucune ligne à vérifier pour {scope}.</p>}
-   <details className="monthly-older"><summary>Comment Jev décide</summary><p className="footnote">Pour chaque produit, la règle de Vanier (outil de réappro) calcule une quantité : rythme des 4 dernières semaines × jours couverts (+ délai et sécurité si le stock est connu, moins le stock), ±15 % selon la tendance, arrondie à la caisse. Jev reçoit les 12 semaines de ventes, le stock et le calcul, puis choisit entre <b>rien</b>, <b>1 caisse de moins</b>, <b>la règle</b> et <b>1 caisse de plus</b>. Il ne rédige rien : il donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Vous gardez le dernier mot : la quantité est modifiable avant l’enregistrement.</p></details>
+   <details className="monthly-older"><summary>Comment Jev décide</summary><p className="footnote">Pour chaque produit, la règle de Vanier (outil de réappro) calcule une quantité : rythme moyen des 4 dernières semaines et de toutes les semaines circulaires (jeudi au mercredi; une semaine incomplète est ramenée à 7 jours, les semaines d’ouverture sont écartées) × jours couverts, ±15 % selon la tendance (à partir de 12 unités vendues), arrondie à la caisse la plus proche. Si le stock est connu : délai et sécurité compris, moins le stock, arrondie à la caisse supérieure. Jev reçoit les 12 semaines de ventes, le stock et le calcul, puis choisit entre <b>rien</b>, <b>1 caisse de moins</b>, <b>la règle</b> et <b>1 caisse de plus</b>. Il ne rédige rien : il donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Vous gardez le dernier mot : la quantité est modifiable avant l’enregistrement.</p></details>
   </>}
  </section>;
 }

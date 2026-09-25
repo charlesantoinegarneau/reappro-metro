@@ -49,3 +49,7 @@ next-env.d.ts
 
 # Netlify
 /.netlify/
+
+# real sales reports never go in the repository
+Ventes-*/
+*.CSV
