@@ -81,3 +81,4 @@
 .metro-brand>th{background:#eef4f0!important;font-weight:650;font-size:14px;position:static!important;box-shadow:none!important;max-width:none!important}.metro-brand small{display:inline!important;margin-left:10px}
 .metro-variant{display:block;font-size:13px;color:var(--ink);font-weight:500}.metro-same{color:var(--muted)}.metro-bo{color:#9b6516!important}
 .metro-elsewhere{border:1px dashed var(--line);border-radius:9px;background:#fff;padding:14px 16px;margin:12px 0}.metro-elsewhere h3{font-size:15px;margin:0 0 8px}.metro-elsewhere ul{list-style:none;margin:0;padding:0}.metro-elsewhere li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-top:1px solid #eef2ef}.metro-elsewhere li small{display:block}
+.metro-cost{display:block;font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap}

@@ -22,7 +22,7 @@ export async function GET(req){
  try{const db=database(),today=localDate(new Date()),week=planWeek(today),data=await sales(db,user);
   const [saved,known]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user)]);
   const weeks=[...new Set(data.rows.map(r=>r.week))].sort();
-  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{count:Object.keys(known.items).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)||null,count:weeks.length},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev()});
+  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)||null,count:weeks.length},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev()});
  }catch{return json({error:'Données Metro indisponibles.'},503);}
 }
 export async function POST(req){
@@ -42,7 +42,7 @@ export async function POST(req){
    let items;try{items=validCatalog(body.items);}catch(e){return json({error:e.message},400);}
    const importedAt=new Date().toISOString();
    await db.prepare('INSERT INTO metro_catalog(user_id,document,imported_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,JSON.stringify({items}),importedAt).run();
-   return json({count:Object.keys(items).length});
+   return json({count:Object.keys(items).length,priced:Object.values(items).filter(v=>v.cost!=null).length});
   }
   if(body.action==='decide'){
    let settings;try{settings=validSettings(body.settings);}catch(e){return json({error:e.message},400);}
