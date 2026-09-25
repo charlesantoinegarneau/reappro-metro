@@ -1,0 +1,8 @@
+# Next.js on Netlify: the Next.js runtime is detected automatically.
+# Netlify Database migrations (netlify/database/migrations) run before publishing.
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
