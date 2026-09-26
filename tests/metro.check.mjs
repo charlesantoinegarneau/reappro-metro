@@ -151,8 +151,8 @@ test('marques : déduites de la description Metro, ou du catalogue Shopify par c
   'whey,Protéine Whey,"<p>Texte,\nsur deux lignes</p>",Nova Pharma,Saveur,Vanille,Format,454 g,0628176604411,24.50',
   'whey,,,,,Chocolat,,454 g,628176604412,','shaker,Shaker,,Shop Santé,Title,Default Title,,,123,4'].join('\n');
  const items=parseShopifyExport(csv);
- assert.deepEqual(items['628176604411'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5});
- assert.deepEqual(items['628176604412'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Chocolat / 454 g',cost:null},'coût absent : inconnu, pas zéro');
+ assert.deepEqual(items['628176604411'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5,sku:''});
+ assert.deepEqual(items['628176604412'],{brand:'Nova Pharma',product:'Protéine Whey',variant:'Chocolat / 454 g',cost:null,sku:''},'coût absent : inconnu, pas zéro');
  assert.equal(items['123'].variant,'');assert.equal(items['123'].cost,4);
  assert.deepEqual(identify('00628176604411','SS NOVA PHARMA X',items),items['628176604411'],'zéros de tête ignorés');
  assert.throws(()=>parseShopifyExport('a,b\n1,2'),/export de produits Shopify/);
@@ -169,7 +169,7 @@ test('catalogue lu dans Shopify : pages de variantes, code-barres, coût, erreur
  const {catalogPage,shopifyClient,CATALOG_QUERY}=await import('../lib/metro/shopify.js');
  const calls=[];const page=(nodes,next)=>({data:{productVariants:{nodes,pageInfo:{hasNextPage:!!next,endCursor:next}}}});
  const replies=[{status:429},{status:200,body:{errors:[{extensions:{code:'THROTTLED'}}]}},{status:200,body:page([
-  {barcode:'0628176604411',selectedOptions:[{name:'Saveur',value:'Vanille'},{name:'Format',value:'454 g'}],product:{title:'Protéine Whey',vendor:'Nova Pharma'},inventoryItem:{unitCost:{amount:'24.50',currencyCode:'CAD'}}},
+  {barcode:'0628176604411',sku:'NP-WHEY-VAN',selectedOptions:[{name:'Saveur',value:'Vanille'},{name:'Format',value:'454 g'}],product:{title:'Protéine Whey',vendor:'Nova Pharma'},inventoryItem:{unitCost:{amount:'24.50',currencyCode:'CAD'}}},
   {barcode:'123',selectedOptions:[{name:'Title',value:'Default Title'}],product:{title:'Shaker',vendor:'Shop Santé'},inventoryItem:{unitCost:null}},
   {barcode:'',selectedOptions:[],product:{title:'Sans code',vendor:'X'},inventoryItem:null}],'c2')}];
  const request=async(url,init)=>{calls.push({url,init});const r=replies.shift();return {ok:r.status<300,status:r.status,json:async()=>r.body};};
@@ -180,7 +180,28 @@ test('catalogue lu dans Shopify : pages de variantes, code-barres, coût, erreur
  assert.equal(calls[2].init.headers['X-Shopify-Access-Token'],'jeton-de-test');
  assert.deepEqual(JSON.parse(calls[2].init.body),{query:CATALOG_QUERY,variables:{cursor:'c1'}});
  assert.equal(next,'c2');
- assert.deepEqual(items,{'628176604411':{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5},'123':{brand:'Shop Santé',product:'Shaker',variant:'',cost:null}});
+ assert.deepEqual(items,{'628176604411':{brand:'Nova Pharma',product:'Protéine Whey',variant:'Vanille / 454 g',cost:24.5,sku:'NP-WHEY-VAN'},'123':{brand:'Shop Santé',product:'Shaker',variant:'',cost:null,sku:''}});
  await assert.rejects(shopifyClient(null)(CATALOG_QUERY),/SHOPIFY_ADMIN_ACCESS_TOKEN/);
  await assert.rejects(shopifyClient('x',{request:async()=>({ok:false,status:401})})(CATALOG_QUERY),/jeton révoqué/);
  await assert.rejects(shopifyClient('x',{request:async()=>({ok:true,status:200,json:async()=>({errors:[{extensions:{code:'ACCESS_DENIED'}}]})})})(CATALOG_QUERY),/portée/)});
+
+test('stock en rayon : fichier de réappro, rapprochement par SKU ou par nom, négatif ignoré, chances de couvrir',async()=>{
+ const {parseStockTable,matchStock,stockDate}=await import('../lib/metro/stock.js');
+ const {coverageCdf}=await import('../lib/metro/plan.js');
+ assert.equal(stockDate('reappro-2025-09-27-2026-09-26.xlsx'),'2026-09-26');
+ const rows=parseStockTable([['Produit;SKU;Action;Stock'],['Nova Pharma - Whey — Vanille;NP-WHEY-VAN;Surveiller;5'],['Grenade - Barre — Oreo;;Commander;-7'],['Allmax - Creatine - 400g — Default Title;;Surveiller;3'],['Inconnu - X;ZZZ;Surveiller;2']]);
+ assert.deepEqual(rows.map(r=>r.stock),[5,-7,3,2]);
+ const catalog={'628176604411':{brand:'Nova Pharma',product:'Nova Pharma - Whey',variant:'Vanille',sku:'NP-WHEY-VAN'},'111':{brand:'Grenade',product:'Grenade - Barre',variant:'Oreo',sku:''},'222':{brand:'Allmax',product:'Allmax - Creatine - 400g',variant:'',sku:''}};
+ const m=matchStock(rows,catalog);
+ assert.deepEqual(m.items,{'628176604411':5,'111':-7,'222':3});assert.deepEqual(m.unmatched,['Inconnu - X']);
+ // Poisson at 2 per week: 0 → 14 %, 2 → 68 %, 4 → 95 %.
+ const cdf=coverageCdf(2,2);assert.equal(Math.round(cdf(0)*100),14);assert.equal(Math.round(cdf(2)*100),68);assert.equal(Math.round(cdf(4)*100),95);
+ // In the rule: a known shelf lowers the order and raises the chance of covering; a negative one is ignored.
+ const W=WEEKS.slice(-8),sales=[...W.map(w=>row('A','0628176604411',w,7)),...W.map(w=>row('A','111',w,7))];
+ const stocks={A:{items:{'628176604411':5,'111':-7},asOf:'2026-09-24'}};
+ const lines=planLines(sales,S,TODAY,catalog,stocks),known=lines.find(l=>l.sku==='0628176604411'),bad=lines.find(l=>l.sku==='111');
+ assert.equal(known.stock,5);assert.equal(known.stockAsOf,'2026-09-24');assert.equal(known.base,8,'7/sem. : 1/j × 10 j × 1,25 − 5 = 7,5 → 8');
+ assert.equal(bad.stock,null);assert.equal(bad.stockIssue,'négatif');assert.equal(bad.stockRaw,-7);assert.equal(bad.base,7,'stock ignoré : remplacement des ventes');
+ assert.ok(known.coverage.regle>known.coverage.aucune&&known.coverage.hausse>=known.coverage.regle);
+ assert.ok(known.coverage.aucune>0,'le rayon seul couvre une partie de la période');
+ assert.equal(jevRequest([known],S).state.lignes.l0.chances_de_couvrir.regle,Math.round(known.coverage.regle*100)+' %')});

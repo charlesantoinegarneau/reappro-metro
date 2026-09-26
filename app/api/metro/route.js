@@ -8,6 +8,7 @@ import {CHUNK,decideLines} from '@/lib/metro/jev';
 import {validOrder} from '@/lib/metro/order';
 import {validCatalog} from '@/lib/metro/catalog';
 import {catalogPage,shopifyClient} from '@/lib/metro/shopify';
+import {matchStock,validStockRows} from '@/lib/metro/stock';
 export const dynamic='force-dynamic';
 export const maxDuration=60;
 const json=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
@@ -15,17 +16,19 @@ async function sales(db,user){const row=await db.prepare('SELECT document,import
 // The AI Gateway provides the credentials inside Netlify functions only.
 function jev(){try{return new TypeSafeClient({timeout:25000,retry:{maxRetries:1}});}catch{return null;}}
 async function catalog(db,user){const row=await db.prepare('SELECT document,imported_at FROM metro_catalog WHERE user_id=?').bind(user).first();return row?{...JSON.parse(row.document),importedAt:row.imported_at}:{items:null,importedAt:null};}
+// Shelf stock per Metro: {metro: {items, asOf, filename, matched, unmatched, importedAt}}.
+async function stocks(db,user){const r=await db.prepare('SELECT metro,document,imported_at FROM metro_stock WHERE user_id=?').bind(user).all();return Object.fromEntries(r.results.map(x=>[x.metro,{...JSON.parse(x.document),importedAt:x.imported_at}]));}
 function settingsFrom(url){const n=k=>url.searchParams.has(k)?Number(url.searchParams.get(k)):DEFAULT_SETTINGS[k];return validSettings({coverageDays:n('coverageDays'),leadDays:n('leadDays'),safety:n('safety')});}
 
 export async function GET(req){
  const user=await currentUser(req);if(!user)return json({error:'Connexion requise.'},401);
  let settings;try{settings=settingsFrom(new URL(req.url));}catch(e){return json({error:e.message},400);}
  try{const db=database(),today=localDate(new Date()),week=planWeek(today),data=await sales(db,user);
-  const [saved,known]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user)]);
+  const [saved,known,shelf]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user),stocks(db,user)]);
   // Complete weeks feed the rule; a week still in progress is shown apart.
   const all=[...new Set(data.rows.map(r=>r.week))].sort(),weeks=all.filter(w=>addDays(w,6)<today),current=all.filter(w=>addDays(w,6)>=today);
   const progress=current.map(w=>({week:w,metros:[...new Map(data.rows.filter(r=>r.week===w).map(r=>[r.metro,r.days])).entries()].map(([metro,days])=>({metro,days}))}));
-  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)?addDays(weeks.at(-1),6):null,count:weeks.length,current:progress},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
+  return json({week,settings,lines:planLines(data.rows,settings,today,known.items,shelf),stocks:Object.fromEntries(Object.entries(shelf).map(([m,v])=>[m,{asOf:v.asOf,filename:v.filename,matched:v.matched,unmatched:v.unmatched,negative:Object.values(v.items).filter(x=>x<0).length,importedAt:v.importedAt}])),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)?addDays(weeks.at(-1),6):null,count:weeks.length,current:progress},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
  }catch{return json({error:'Données Metro indisponibles.'},503);}
 }
 export async function POST(req){
@@ -46,6 +49,17 @@ export async function POST(req){
    if(body.cursor!==null&&body.cursor!==undefined&&(typeof body.cursor!=='string'||body.cursor.length>500))return json({error:'Page invalide.'},400);
    try{return json(await catalogPage(shopifyClient(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN),body.cursor||null));}catch(e){return json({error:e.message},502);}
   }
+  // Shelf stock of one Metro, matched to its barcodes through the Shopify catalog.
+  if(body.action==='stock'){
+   let rows;try{rows=validStockRows(body.rows);}catch(e){return json({error:e.message},400);}
+   const metro=String(body.metro||'').slice(0,120),asOf=/^\d{4}-\d{2}-\d{2}$/.test(body.asOf||'')?body.asOf:null;
+   if(!metro)return json({error:'Choisissez le Metro de ce fichier de stock.'},400);
+   const known=await catalog(db,user);if(!known.items)return json({error:'Lisez d’abord le catalogue Shopify : il relie les SKU du fichier de stock aux codes-barres Metro.'},400);
+   const {items,matched,unmatched}=matchStock(rows,known.items),importedAt=new Date().toISOString(),filename=String(body.filename||'stock').slice(0,200);
+   if(!matched)return json({error:'Aucun produit du fichier n’a été reconnu dans le catalogue Shopify. Actualisez le catalogue (il doit contenir les SKU) puis réessayez.'},400);
+   await db.prepare('INSERT INTO metro_stock(user_id,metro,document,imported_at) VALUES(?,?,?,?) ON CONFLICT(user_id,metro) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,metro,JSON.stringify({items,asOf,filename,matched,unmatched:unmatched.length}),importedAt).run();
+   return json({matched,unmatched:unmatched.length,unmatchedSample:unmatched.slice(0,5),negative:Object.values(items).filter(x=>x<0).length});
+  }
   if(body.action==='catalog'){
    let items;try{items=validCatalog(body.items);}catch(e){return json({error:e.message},400);}
    const importedAt=new Date().toISOString();
@@ -56,7 +70,7 @@ export async function POST(req){
   if(body.action==='decide'){
    let settings;try{settings=validSettings(body.settings);}catch(e){return json({error:e.message},400);}
    if(!Array.isArray(body.keys)||!body.keys.length||body.keys.length>CHUNK||body.keys.some(k=>typeof k!=='string'))return json({error:'Lignes invalides.'},400);
-   const [data,known]=await Promise.all([sales(db,user),catalog(db,user)]),wanted=new Set(body.keys),lines=planLines(data.rows,settings,today,known.items).filter(l=>wanted.has(l.key));
+   const [data,known,shelf]=await Promise.all([sales(db,user),catalog(db,user),stocks(db,user)]),wanted=new Set(body.keys),lines=planLines(data.rows,settings,today,known.items,shelf).filter(l=>wanted.has(l.key));
    return json({decisions:await decideLines(jev(),lines,settings)});
   }
   if(body.action==='save'){
