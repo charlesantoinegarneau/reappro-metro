@@ -1,6 +1,6 @@
 'use client';
 import {Fragment,useEffect,useMemo,useState} from 'react';
-import {combineFiles,readSalesFile} from '@/lib/metro/sales';
+import {addDays,combineFiles,readSalesFile} from '@/lib/metro/sales';
 import {orderCsv} from '@/lib/metro/order';
 import {readCatalogFile} from '@/lib/metro/catalog';
 
@@ -54,7 +54,10 @@ export default function MetroPanel(){
    for(const file of files){try{results.push(await readSalesFile(file.name,await file.arrayBuffer()));}catch(e){throw Error(file.name+' : '+e.message);}}
    const rows=combineFiles(results),skipped=results.reduce((n,r)=>n+r.skipped,0),metros=[...new Set(rows.map(r=>r.metro))].sort(),weeks=[...new Set(rows.map(r=>r.week))].sort();
    const j=await api('',{action:'import',rows,filename:files.length>1?files.length+' fichiers':files[0].name});
-   setNotice(`${files.length} fichier${files.length>1?'s':''} : ${metros.join(', ')} · ${weeks.length} semaine${weeks.length>1?'s':''} (${dateLabel(weeks[0])} au ${dateLabel(weeks.at(-1))}) · ${j.lines} lignes produit × semaine${skipped?` · ${skipped} lignes illisibles ignorées`:''}${results.some(r=>r.hasStock)?'':'. Stock en rayon inconnu : les quantités remplacent les ventes'}.`);await load();
+   // The dates actually read, not the weeks' Thursdays.
+   const from=results.map(r=>r.from).filter(Boolean).sort()[0],to=results.map(r=>r.to).filter(Boolean).sort().at(-1),today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Toronto'});
+   const period=from===to?`ventes du ${dateLabel(from)}`:`ventes du ${dateLabel(from)} au ${dateLabel(to)}`,open=weeks.filter(w=>addDays(w,6)>=today);
+   setNotice(`${files.length} fichier${files.length>1?'s':''} : ${metros.join(', ')} · ${period} (${weeks.length} semaine${weeks.length>1?'s':''} circulaire${weeks.length>1?'s':''}) · ${j.lines} lignes produit × semaine${skipped?` · ${skipped} lignes illisibles ignorées`:''}${results.some(r=>r.hasStock)?'':'. Stock en rayon inconnu : les quantités remplacent les ventes'}.${open.length?` La semaine du ${dateLabel(open[0])} est en cours : elle entrera dans le calcul une fois terminée (mercredi ${dateLabel(addDays(open[0],6))}).`:''}`);await load();
   }catch(e){setError(e.message);}finally{setBusy('');}
  }
  async function uploadCatalog(file){
@@ -107,7 +110,7 @@ export default function MetroPanel(){
  const totals=metros.map(m=>{const list=lines.filter(l=>l.metro===m&&visible(l));return {metro:m,lines:list.filter(l=>qtyOf(l)>0).length,units:list.reduce((n,l)=>n+qtyOf(l),0),review:list.filter(l=>decisions[l.key]?.review).length,bo:list.filter(l=>l.boNow).length,value:list.reduce((n,l)=>n+(l.cost??0)*qtyOf(l),0),priced:list.filter(l=>qtyOf(l)>0).every(l=>l.cost!=null),decided:list.filter(l=>decisions[l.key]).length,total:list.length};});
  const setting=(k,v)=>setSettings(s=>({...s,[k]:v}));
  return <section className="comparison metro-panel" id="metro">
-  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaines){data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify ({data.catalog.source==='shopify'?'lu dans Shopify':'export CSV'}) : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, mis à jour le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{lines.length>0&&<span className="metro-imports">{picker}{shopifyButton||catalogPicker}</span>}</div>
+  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaine{data.weeks.count>1?'s':''} complète{data.weeks.count>1?'s':''}){data.weeks.current?.map(c=><Fragment key={c.week}> · semaine du {dateLabel(c.week)} en cours ({c.metros.map(m=>`${m.metro} : ${m.days} jour${m.days>1?'s':''}`).join(', ')}), pas encore dans le calcul</Fragment>)}{data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify ({data.catalog.source==='shopify'?'lu dans Shopify':'export CSV'}) : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, mis à jour le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{lines.length>0&&<span className="metro-imports">{picker}{shopifyButton||catalogPicker}</span>}</div>
   {error&&<p role="alert" className="alert">{error}</p>}{notice&&<p role="status" className="demo">{notice}</p>}
   {data&&!lines.length&&<div className="monthly-empty"><p>Importez les rapports « Ventes Shop Santé » reçus de Metro chaque jeudi (fichiers ZRT_ZMPOSJ21_…CSV) : vous pouvez en sélectionner plusieurs à la fois, toutes semaines et tous Metros confondus. Tout autre fichier avec une ligne par Metro, produit et date est aussi accepté.</p>{picker}</div>}
   {lines.length>0&&<>

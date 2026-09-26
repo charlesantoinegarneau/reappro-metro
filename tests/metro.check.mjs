@@ -31,12 +31,12 @@ function metroReport(lines){
  return bytes.buffer;
 }
 test('rapport Metro : UTF-16, en-tête sur deux lignes, Metro selon le code client, jours présents',async()=>{
- const {rows,skipped}=await readSalesFile('ZRT_ZMPOSJ21_SHOPSANTE_01_00000.CSV',metroReport([
+ const {rows,skipped,from,to}=await readSalesFile('ZRT_ZMPOSJ21_SHOPSANTE_01_00000.CSV',metroReport([
   ['17.09.2026','22658','MARCHE INNOVATION INC.','0000000000017','SS PROTÉINE TEST 454G','2','69,98'],
   ['18.09.2026','22658','MARCHE INNOVATION INC.','0000000000017','SS PROTÉINE TEST 454G','1','34,99'],
   ['22.09.2026','22658','MARCHE INNOVATION INC.','0000000000024','SS BARRE TEST 60G','3','8,97'],
   ['20.09.2026','99999','MARCHE NOUVEAU INC.','0000000000017','SS PROTÉINE TEST 454G','0','-12,50']]));
- assert.equal(skipped,0);
+ assert.equal(skipped,0);assert.deepEqual([from,to],['2026-09-17','2026-09-22'],'vraies dates lues, pas les jeudis');
  assert.deepEqual(rows.find(r=>r.metro==='Innovation'&&r.sku==='0000000000017'),{metro:'Innovation',sku:'0000000000017',product:'SS PROTÉINE TEST 454G',week:'2026-09-17',units:3,days:3,stock:null,pack:null});
  assert.equal(rows.find(r=>r.metro==='Marche Nouveau Inc.').units,0,'client inconnu : son nom, pas son code');
  // Missing days are scaled to 7 in the rhythm; a Metro's opening weeks are left out.

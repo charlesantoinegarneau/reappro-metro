@@ -2,7 +2,7 @@ import {TypeSafeClient} from '@typesafe-ai/sdk';
 import {database} from '@/db/database';
 import {currentUser,sameOrigin} from '@/lib/auth';
 import {localDate} from '@/lib/dates';
-import {mergeSales,validateSalesRows} from '@/lib/metro/sales';
+import {addDays,mergeSales,validateSalesRows} from '@/lib/metro/sales';
 import {DEFAULT_SETTINGS,planLines,planWeek,validSettings} from '@/lib/metro/plan';
 import {CHUNK,decideLines} from '@/lib/metro/jev';
 import {validOrder} from '@/lib/metro/order';
@@ -22,8 +22,10 @@ export async function GET(req){
  let settings;try{settings=settingsFrom(new URL(req.url));}catch(e){return json({error:e.message},400);}
  try{const db=database(),today=localDate(new Date()),week=planWeek(today),data=await sales(db,user);
   const [saved,known]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user)]);
-  const weeks=[...new Set(data.rows.map(r=>r.week))].sort();
-  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)||null,count:weeks.length},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
+  // Complete weeks feed the rule; a week still in progress is shown apart.
+  const all=[...new Set(data.rows.map(r=>r.week))].sort(),weeks=all.filter(w=>addDays(w,6)<today),current=all.filter(w=>addDays(w,6)>=today);
+  const progress=current.map(w=>({week:w,metros:[...new Map(data.rows.filter(r=>r.week===w).map(r=>[r.metro,r.days])).entries()].map(([metro,days])=>({metro,days}))}));
+  return json({week,settings,lines:planLines(data.rows,settings,today,known.items),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)?addDays(weeks.at(-1),6):null,count:weeks.length,current:progress},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
  }catch{return json({error:'Données Metro indisponibles.'},503);}
 }
 export async function POST(req){
