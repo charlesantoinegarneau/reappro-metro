@@ -84,3 +84,26 @@
 .metro-cost{display:block;font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap}
 .metro-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px}.metro-min{flex-direction:row;align-items:center;gap:8px;font-weight:500}.metro-min input{width:72px;min-height:36px;padding:5px 8px;text-align:right}.metro-min .quiet-button{min-height:30px;padding:0}
 .metro-filtered{font-style:normal;font-size:11px;font-weight:600;color:#9b6516;background:#fff5e6;border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
+/* Mode switch and autosave state */
+.metro-modebar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 16px}.metro-mode button{font-size:14px!important;min-height:40px!important;padding:6px 16px!important}
+.metro-saved{font-size:12px;color:var(--muted)}
+.metro-removed>th,.metro-removed>td{opacity:.55}.metro-removed>th{text-decoration:line-through}
+/* Picking list: large touch targets, one product per row */
+.pick{margin-top:6px}
+.pick-progress{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px;font-size:14px}.pick-progress b{font-size:18px}
+.pick-progress span{display:block;height:6px;background:#e3ebe6;border-radius:3px;margin-top:8px;overflow:hidden}.pick-progress i{display:block;height:100%;background:var(--green)}
+.pick-tabs{display:flex;flex-wrap:wrap;margin:0 0 10px}.pick-tabs button{flex:1;font-size:13px!important;min-height:40px!important}
+.pick-search{width:100%;margin:0 0 12px}
+.pick-group h3{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:18px 0 6px}
+.pick-line{display:grid;grid-template-columns:52px 1fr auto auto;align-items:center;gap:10px 12px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 8px}
+.pick-line.picked{background:#eef6f1;border-color:#b9d6c4}.pick-line.picked .pick-info b{color:var(--muted)}
+.pick-line.removed{background:#f6f6f4}.pick-line.removed .pick-info,.pick-line.removed .pick-check,.pick-line.removed s{opacity:.55}.pick-line.removed .pick-info b{text-decoration:line-through}
+.pick-check{width:48px;height:48px;min-height:48px;padding:0;border:2px solid #9fbba9;border-radius:10px;font-size:24px;color:#fff;background:#fff}.pick-check[aria-pressed=true]{background:var(--green);border-color:var(--green)}
+.pick-info{min-width:0;display:flex;flex-direction:column;gap:1px}.pick-info b{font-size:15px;line-height:1.3}.pick-info span{font-size:14px}.pick-info small{font-size:12px;color:var(--muted)}
+.pick-changed{color:#9b6516!important;font-weight:600}
+.pick-qty{display:flex;align-items:center;gap:4px}.pick-qty button{width:44px;height:44px;min-height:44px;padding:0;font-size:22px;border-radius:9px}
+.pick-qty input{width:58px;min-height:44px;text-align:center;font-size:20px;font-weight:700;padding:4px}
+.pick-removed{display:flex;align-items:center;gap:10px;font-size:18px}.pick-removed button{min-height:40px}
+.pick-remove{font-size:13px!important;color:var(--red)!important}
+.pick-footer{margin:18px 0}
+@media(max-width:650px){.pick-line{grid-template-columns:48px 1fr auto;grid-template-areas:"check info info" ". remove qty";gap:8px 10px}.pick-check{grid-area:check}.pick-info{grid-area:info}.pick-qty,.pick-removed{grid-area:qty;justify-content:flex-end}.pick-removed{grid-column:2/4}.pick-remove{grid-area:remove;justify-self:start;min-height:32px!important;padding:0!important}.metro-modebar .segmented{display:flex;width:100%}.metro-mode button{flex:1}}

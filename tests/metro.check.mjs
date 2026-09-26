@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {combineFiles,detectColumns,mergeSales,parseDate,parseNumber,parseSalesTable,readSalesFile,validateSalesRows,weekOf} from '../lib/metro/sales.js';
-import {candidates,planLines,planWeek,validSettings} from '../lib/metro/plan.js';
+import {candidates,planLines,planWeek,stepOf,validSettings} from '../lib/metro/plan.js';
 import {decideLines,jevRequest} from '../lib/metro/jev.js';
 import {orderCsv,validOrder} from '../lib/metro/order.js';
 import {testDatabase} from './pg.mjs';
@@ -59,7 +59,7 @@ test('règle : rythme, tendance, stock, caisse, semaine en cours exclue, semaine
  assert.equal(planWeek(TODAY),'2026-10-01');assert.equal(planWeek('2026-10-01'),'2026-10-08');assert.equal(planWeek('2026-09-30'),'2026-10-01');
  assert.throws(()=>validSettings({...S,coverageDays:0}));
  const rows=[
-  // Steady 7 / week, stock known (4), cases of 6: 1/day × 10 d × 1.25 − 4 = 8.5 → 12.
+  // Steady 7 / week, stock known (4), cases of 6 (information only): 1/day × 10 d × 1.25 − 4 = 8.5 → 9 units, no rounding to the case.
   ...WEEKS.map(w=>row('A','STEADY',w,7,{stock:4,pack:6})),
   // Rising: 2 / week then 10 / week over the last 4 weeks, no stock: rhythm (10 + 4.67) / 2 = 7.33 × 1.15 = 8.4 → 8 (nearest).
   ...WEEKS.map((w,i)=>row('A','RISING',w,i>=8?10:2)),
@@ -71,13 +71,14 @@ test('règle : rythme, tendance, stock, caisse, semaine en cours exclue, semaine
   row('B','STEADY',WEEKS[10],14),row('B','STEADY',WEEKS[11],14)];
  const lines=planLines(rows,S,TODAY),get=(m,s)=>lines.find(l=>l.metro===m&&l.sku===s);
  const steady=get('A','STEADY');
- assert.equal(steady.week,'2026-10-01');assert.equal(steady.history.length,12);assert.equal(steady.v4,7);assert.equal(steady.trend,'stable');assert.equal(steady.stock,4);assert.equal(steady.base,12);
- assert.deepEqual(steady.candidates,{aucune:0,reduite:6,regle:12,hausse:18});assert.equal(steady.urgency,'urgente','stock 4 < 2 × délai 3 j × 1 / j');
+ assert.equal(steady.week,'2026-10-01');assert.equal(steady.history.length,12);assert.equal(steady.v4,7);assert.equal(steady.trend,'stable');assert.equal(steady.stock,4);assert.equal(steady.base,9);
+ assert.deepEqual(steady.candidates,{aucune:0,reduite:8,regle:9,hausse:10});assert.equal(steady.urgency,'urgente','stock 4 < 2 × délai 3 j × 1 / j');
  const rising=get('A','RISING');assert.equal(rising.trend,'hausse');assert.equal(rising.stock,null);assert.equal(rising.base,8);assert.match(rising.rule,/stock inconnu/);
  const old=get('A','OLD');assert.equal(old.base,0);assert.deepEqual(old.candidates,{aucune:0});
  const b=get('B','STEADY');assert.equal(b.history.length,2);assert.equal(b.v4,14);assert.equal(b.base,14);
  assert.equal(planLines([...WEEKS.map(w=>row('C','LOW',w,14,{stock:1}))],S,TODAY)[0].urgency,'rupture');
- assert.deepEqual(candidates(0,6,true),{aucune:0,hausse:6})});
+ assert.deepEqual(candidates(0,true),{aucune:0,hausse:1});assert.deepEqual(candidates(1,true),{aucune:0,regle:1,hausse:2});
+ assert.equal(stepOf(20),3);assert.deepEqual(candidates(20,true),{aucune:0,reduite:17,regle:20,hausse:23},'écart d’environ 15 % pour un gros vendeur')});
 
 const fakeJev=(answer)=>({calls:[],async systemOne(request,options){this.calls.push({request,options});return {model:'jev-test',usage:{input_tokens:1,output_tokens:1},answers:answer(request)};}});
 test('Jev : une question « choice » par ligne, probabilités, confiance faible à vérifier, repli sur la règle',async()=>{
@@ -93,12 +94,12 @@ test('Jev : une question « choice » par ligne, probabilités, confiance faible
   :[k,{type:'choice',choice:'regle',confidence:.45,probabilities:{aucune:.3,regle:.45,hausse:.25}}])));
  const decisions=await decideLines(jev,lines,S),by=Object.fromEntries(decisions.map(d=>[d.key.split('|')[1],d]));
  assert.equal(jev.calls.length,1,'une seule requête pour le lot');assert.equal(jev.calls[0].options.timeout,25000);
- assert.equal(by.STEADY.qty,18);assert.equal(by.STEADY.source,'jev');assert.equal(by.STEADY.review,false);assert.equal(by.STEADY.expected,16.5);
+ assert.equal(by.STEADY.qty,10);assert.equal(by.STEADY.source,'jev');assert.equal(by.STEADY.review,false);assert.ok(Math.abs(by.STEADY.expected-9.75)<=.051);
  assert.equal(by.NEW.review,true,'confiance sous 60 %');
  assert.deepEqual([by.OLD.qty,by.OLD.source,by.OLD.review],[0,'regle',false],'rien vendu : pas de question');
  // Jev unavailable or an answer outside the options: the rule applies, marked for review.
  const down=await decideLines({systemOne:async()=>{throw Error('panne');}},lines,S);
- assert.deepEqual(down.filter(d=>d.source==='regle'&&d.review).map(d=>[d.qty,d.note]),[[6,'panne'],[12,'panne']]);
+ assert.deepEqual(down.filter(d=>d.source==='regle'&&d.review).map(d=>[d.qty,d.note]),[[6,'panne'],[9,'panne']]);
  const none=await decideLines(null,lines,S);assert.match(none[0].note,/pas configuré/);
  const odd=await decideLines(fakeJev(req=>Object.fromEntries(Object.keys(req.questions).map(k=>[k,{type:'choice',choice:'autre',confidence:1,probabilities:{}}]))),lines,S);
  assert.ok(odd.filter(d=>Object.keys(lines.find(l=>l.key===d.key).candidates).length>1).every(d=>d.source==='regle'&&d.review))});
@@ -107,7 +108,12 @@ test('commande : validation, CSV par Metro, enregistrement par semaine',async()=
  const order={week:'2026-10-01',settings:S,lines:[{metro:'A',sku:'X',product:'Protéine, vanille',qty:12,base:12,jevQty:18,confidence:.8},{metro:'A',sku:'Y',product:'',qty:0},{metro:'B',sku:'X',product:'P',qty:6}]};
  const valid=validOrder(order,'2026-10-01');assert.equal(valid.lines[1].jevQty,null);
  assert.throws(()=>validOrder(order,'2026-10-08'),/semaine/);assert.throws(()=>validOrder({...order,lines:[{metro:'A',sku:'X',qty:1.5}]},'2026-10-01'));
- assert.equal(orderCsv(valid.lines,'A'),'SKU,Produit,Quantité\nX,"Protéine, vanille",12\n');
+ assert.equal(orderCsv(valid.lines,'A'),'UPC,Marque,Produit,Variante,Quantité\nX,,"Protéine, vanille",,12\n');
+ // Picking: status and planned quantity are kept; a removed line leaves the file.
+ const picking=validOrder({...order,lines:[{metro:'A',sku:'X',product:'P',qty:10,planned:12,status:'picked'},{metro:'A',sku:'Y',product:'Q',qty:3,planned:3,status:'removed'}]},'2026-10-01');
+ assert.deepEqual(picking.lines.map(l=>[l.status,l.planned,l.qty]),[['picked',12,10],['removed',3,3]]);
+ assert.equal(orderCsv(picking.lines,'A'),'UPC,Marque,Produit,Variante,Quantité\nX,,P,,10\n');
+ assert.throws(()=>validOrder({...order,lines:[{metro:'A',sku:'X',qty:1,status:'perdu'}]},'2026-10-01'),/invalide/);
  const t=await testDatabase(),save=doc=>t.db.prepare('INSERT INTO metro_orders(user_id,week,document,saved_at) VALUES(?,?,?,?) ON CONFLICT(user_id,week) DO UPDATE SET document=excluded.document,saved_at=excluded.saved_at').bind('owner',doc.week,JSON.stringify(doc),new Date().toISOString()).run();
  await save(valid);await save({...valid,lines:valid.lines.slice(0,1)});
  assert.equal(JSON.parse((await t.db.prepare('SELECT document FROM metro_orders WHERE user_id=? AND week=?').bind('owner','2026-10-01').first()).document).lines.length,1);

@@ -13,15 +13,17 @@ Application privée pour la **commande hebdomadaire de chaque Metro**.
 2. **Règle** : celle de l’outil de réappro de Vanier, ajustée aux ventes des Metros (quelques unités par produit et par semaine) :
    - rythme : moyenne des 4 dernières semaines et de toutes les semaines ;
    - tendance ±15 %, seulement à partir de 12 unités vendues ;
-   - sans stock connu : on remplace ce qui s’est vendu, arrondi à la caisse la plus proche ;
-   - avec stock connu : couverture + délai × sécurité − stock, arrondi à la caisse supérieure.
+   - sans stock connu : on remplace ce qui s’est vendu, arrondi à l’unité ;
+   - avec stock connu : couverture + délai × sécurité − stock.
+   - Les quantités sont en **unités exactes**, sans arrondi à la caisse : on arrondit, ou pas, à la cueillette.
 
    Rétro-test sur trois semaines de 2026 : la règle de Vanier commandait 39 % de plus que les ventes ; la règle ajustée tombe à environ 0 %.
    - **Ruptures probables** : une semaine à zéro est écartée du rythme quand ce zéro était très improbable au rythme du produit (moins de 5 % de chances, à partir de 3 unités par semaine attendues). On parle de « BO » quand aucun Metro ne l’a vendu cette semaine-là (rupture chez le fournisseur), et de « rayon vide » quand seul ce Metro ne l’a pas vendu. Un BO la semaine dernière met la ligne « à vérifier ».
    - **Produits nouveaux** : les semaines d’avant la première vente dans le réseau ne comptent pas.
-3. **Jev** (TypeSafe, via Netlify AI Gateway) : il reçoit pour chaque ligne les ventes, les ruptures probables, le rythme du même produit dans les autres Metros et le coût. Pour chaque ligne, il choisit entre *rien*, *une caisse de moins*, *la règle* et *une caisse de plus*, et donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Si Jev ne répond pas, la règle s’applique.
+3. **Jev** (TypeSafe, via Netlify AI Gateway) : il reçoit pour chaque ligne les ventes, les ruptures probables, le rythme du même produit dans les autres Metros et le coût. Pour chaque ligne, il choisit entre *rien*, *un peu moins*, *la règle* et *un peu plus* (écart d’environ 15 %, au moins 1 unité), et donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Si Jev ne répond pas, la règle s’applique.
 4. **Classement et recherche** : la liste est classée par Marque > Produit > Variante. La marque est déduite de la description Metro, ou vient du catalogue Shopify (Produits → Exporter, CSV) quand on l’importe : marque, produit, variante et coût unitaire (« Cost per item ») exacts, rapprochés par code-barres. Le coût donne la valeur de chaque commande et guide Jev : une caisse de trop coûte cher sur un produit cher et lent, alors qu’une rupture coûte plus qu’un surplus sur un produit peu cher qui se vend bien. La barre de recherche filtre par marque, produit ou code-barres. Elle propose aussi les produits vendus ailleurs dans le réseau mais jamais à ce Metro, qu’on peut ajouter à la main.
-5. **Validation** : les quantités sont modifiables. La commande est enregistrée par semaine et se télécharge en CSV, un fichier par Metro.
+5. **Cueillette** : le mode « Cueillette » sert pendant la préparation, sur téléphone. On y coche les produits cueillis, on ajuste les quantités (− / +), on retire un produit ou on le remet. On y suit la progression (produits et unités cueillis) et on voit la quantité prévue quand elle a changé. Chaque changement est enregistré automatiquement. Le CSV ne contient que les lignes gardées.
+6. **Validation** : les quantités sont modifiables. La commande est enregistrée par semaine et se télécharge en CSV, un fichier par Metro.
 
 Ne jamais ajouter au dépôt de données de ventes réelles, de jeton ou de mot de passe.
 

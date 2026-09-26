@@ -1,5 +1,5 @@
 'use client';
-import {Fragment,useEffect,useMemo,useState} from 'react';
+import {Fragment,useEffect,useMemo,useRef,useState} from 'react';
 import {addDays,combineFiles,readSalesFile} from '@/lib/metro/sales';
 import {orderCsv} from '@/lib/metro/order';
 import {readCatalogFile} from '@/lib/metro/catalog';
@@ -9,7 +9,8 @@ const dateLabel=d=>new Date(d+'T12:00:00Z').toLocaleDateString('fr-CA',{day:'num
 const pct=n=>Math.round(n*100)+' %';
 const money=n=>new Intl.NumberFormat('fr-CA',{style:'currency',currency:'CAD',maximumFractionDigits:n>=100?0:2}).format(n);
 const TREND={hausse:'↗ hausse',baisse:'↘ baisse',stable:'→ stable'};
-const LABEL={aucune:'rien',reduite:'1 caisse de moins',regle:'la règle',hausse:'1 caisse de plus'};
+const LABEL={aucune:'rien',reduite:'un peu moins',regle:'la règle',hausse:'un peu plus'};
+const timeLabel=d=>new Date(d).toLocaleTimeString('fr-CA',{hour:'2-digit',minute:'2-digit'});
 const plain=s=>String(s??'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
 // Every word typed must appear in the brand, product, variant or barcode.
 const matches=(l,query)=>{const text=plain([l.brand,l.name,l.variant,l.product,l.sku].join(' '));return plain(query).split(/\s+/).filter(Boolean).every(w=>text.includes(w));};
@@ -30,12 +31,12 @@ function Spark({history}){
 // Weekly Metro orders: the rules propose, Jev chooses, the owner validates.
 export default function MetroPanel(){
  const [data,setData]=useState(null),[settings,setSettings]=useState({coverageDays:7,leadDays:3,safety:1.25}),[decisions,setDecisions]=useState({}),[final,setFinal]=useState({});
- const [scope,setScope]=useState(''),[onlyReview,setOnlyReview]=useState(false),[query,setQuery]=useState(''),[minQty,setMinQty]=useState(''),[minConf,setMinConf]=useState(''),[added,setAdded]=useState([]),[busy,setBusy]=useState(''),[progress,setProgress]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ const [scope,setScope]=useState(''),[onlyReview,setOnlyReview]=useState(false),[query,setQuery]=useState(''),[minQty,setMinQty]=useState(''),[minConf,setMinConf]=useState(''),[mode,setMode]=useState('prepare'),[pickTab,setPickTab]=useState('todo'),[status,setStatus]=useState({}),[edits,setEdits]=useState(0),[saving,setSaving]=useState(null),[added,setAdded]=useState([]),[busy,setBusy]=useState(''),[progress,setProgress]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
  async function load(s=settings){
   setError('');
   try{const j=await api('?'+new URLSearchParams(Object.entries(s).map(([k,v])=>[k,String(v)])));setData(j);
    // A saved order for this week comes back with its quantities and Jev's choices.
-   if(j.order){setFinal(Object.fromEntries(j.order.lines.map(l=>[l.metro+'|'+l.sku,l.qty])));setAdded(j.order.lines.filter(l=>l.manual).map(l=>({metro:l.metro,sku:l.sku})));setDecisions(Object.fromEntries(j.order.lines.filter(l=>l.jevQty!==null).map(l=>[l.metro+'|'+l.sku,{qty:l.jevQty,confidence:l.confidence,source:'jev',saved:true}])));}
+   if(j.order){setFinal(Object.fromEntries(j.order.lines.map(l=>[l.metro+'|'+l.sku,l.qty])));setStatus(Object.fromEntries(j.order.lines.filter(l=>l.status).map(l=>[l.metro+'|'+l.sku,l.status])));setSaving({savedAt:j.order.savedAt});setAdded(j.order.lines.filter(l=>l.manual).map(l=>({metro:l.metro,sku:l.sku})));setDecisions(Object.fromEntries(j.order.lines.filter(l=>l.jevQty!==null).map(l=>[l.metro+'|'+l.sku,{qty:l.jevQty,confidence:l.confidence,source:'jev',saved:true}])));}
    setScope(old=>old&&j.lines.some(l=>l.metro===old)?old:j.lines[0]?.metro||'');
   }catch(e){setError(e.message);}
  }
@@ -48,6 +49,14 @@ export default function MetroPanel(){
   return [...planned,...extra].sort((a,b)=>by(a.metro,b.metro)||by(a.brand,b.brand)||by(a.name,b.name)||by(a.variant,b.variant)||a.sku.localeCompare(b.sku));
  },[planned,added]);
  const qtyOf=l=>final[l.key]??decisions[l.key]?.qty??l.base;
+ // Quantity decided before picking (Jev, else the rule), to show what changed on the way.
+ const plannedOf=l=>decisions[l.key]?.qty??l.base;
+ // What the order keeps: nothing for a removed line.
+ const keptOf=l=>status[l.key]==='removed'?0:qtyOf(l);
+ // Every change is saved on its own a moment later: the list is also used while picking.
+ const touch=()=>setEdits(n=>n+1);
+ const setQty=(key,q)=>{setFinal(f=>({...f,[key]:Math.max(0,Math.round(+q||0))}));touch();};
+ const setLineStatus=(key,value)=>{setStatus(st=>{const next={...st};if(value)next[key]=value;else delete next[key];return next;});touch();};
  async function upload(files){
   if(!files.length)return;setBusy('import');setError('');setNotice('');
   try{const results=[];
@@ -83,15 +92,19 @@ export default function MetroPanel(){
     for(const d of j.decisions)next[d.key]=d;setDecisions({...next});}
    setFinal(f=>Object.fromEntries(Object.entries(f).filter(([k])=>!todo.some(l=>l.key===k))));
    const fallback=todo.filter(l=>next[l.key]?.source==='regle'&&next[l.key]?.note).length;
+   touch();
    setNotice(fallback?`Jev n’a pas répondu pour ${fallback} ligne${fallback>1?'s':''} : ${next[todo.find(l=>next[l.key]?.note).key].note} La règle est appliquée.`:`Jev a choisi les quantités de ${todo.length} lignes.`);
   }catch(e){setError(e.message);}finally{setBusy('');setProgress(null);}
  }
- async function save(){
-  setBusy('save');setError('');
-  try{const j=await api('',{action:'save',order:{week:data.week,settings,lines:lines.map(l=>({metro:l.metro,sku:l.sku,product:l.product,qty:qtyOf(l),base:l.base,manual:!!l.manual,jevQty:decisions[l.key]?.source==='jev'?decisions[l.key].qty:null,confidence:decisions[l.key]?.source==='jev'?decisions[l.key].confidence:null}))}});
-   setNotice('Commande de la semaine du '+dateLabel(data.week)+' enregistrée.');setData(d=>({...d,order:{...(d.order||{}),savedAt:j.savedAt}}));
-  }catch(e){setError(e.message);}finally{setBusy('');}
+ async function save(silent=false){
+  if(!silent){setBusy('save');setError('');}
+  setSaving(v=>({...(v||{}),pending:true}));
+  try{const j=await api('',{action:'save',order:{week:data.week,settings,lines:lines.map(l=>({metro:l.metro,sku:l.sku,product:l.product,qty:qtyOf(l),planned:plannedOf(l),status:status[l.key]||'',base:l.base,manual:!!l.manual,jevQty:decisions[l.key]?.source==='jev'?decisions[l.key].qty:null,confidence:decisions[l.key]?.source==='jev'?decisions[l.key].confidence:null}))}});
+   setSaving({savedAt:j.savedAt});if(!silent)setNotice('Commande de la semaine du '+dateLabel(data.week)+' enregistrée.');
+  }catch(e){setSaving(v=>({...(v||{}),pending:false,failed:true}));setError('Enregistrement impossible : '+e.message+' Vos modifications restent à l’écran; réessayez.');}finally{if(!silent)setBusy('');}
  }
+ const saveRef=useRef(save);saveRef.current=save;
+ useEffect(()=>{if(!edits)return;setSaving(v=>({...(v||{}),pending:true}));const t=setTimeout(()=>saveRef.current(true),1200);return()=>clearTimeout(t);},[edits]);
  const shopifyButton=data?.shopify&&<button className="quiet-button" onClick={syncShopify} disabled={!!busy}>{busy==='shopify'?`Lecture Shopify… ${progress?.done??0} variantes`:data?.catalog?.source==='shopify'?'Actualiser le catalogue Shopify':'Lire le catalogue dans Shopify'}</button>;
  const catalogPicker=<label className={'quiet-button monthly-upload'+(busy==='catalog'?' busy':'')}>{busy==='catalog'?'Lecture…':data?.catalog?'Mettre à jour le catalogue Shopify':'Importer le catalogue Shopify'}<input type="file" accept=".csv,text/csv" hidden disabled={!!busy} onChange={e=>{uploadCatalog(e.target.files?.[0]);e.target.value='';}}/></label>;
  const picker=<label className={'quiet-button monthly-upload'+(busy==='import'?' busy':'')}>{busy==='import'?'Lecture…':lines.length?'Importer des ventes':'Importer un fichier de ventes'}<input type="file" multiple hidden disabled={!!busy} onChange={e=>{upload([...(e.target.files||[])]);e.target.value='';}}/></label>;
@@ -106,14 +119,23 @@ export default function MetroPanel(){
  const shown=lines.filter(l=>l.metro===scope&&visible(l));
  // Search also finds the network's products this Metro has never sold, to add by hand.
  const elsewhere=query.trim().length>=2?[...new Map(planned.filter(l=>l.metro!==scope&&matches(l,query)&&!lines.some(x=>x.metro===scope&&x.sku===l.sku)).map(l=>[l.sku,l])).values()].slice(0,20):[];
+ // Picking list: what Jev or the rule planned, what was set by hand, and removed lines (to put back).
+ const inPick=l=>l.metro===scope&&(plannedOf(l)>0||final[l.key]>0||!!status[l.key]||l.manual);
+ const pickAll=lines.filter(inPick),pickCount={todo:pickAll.filter(l=>!status[l.key]).length,picked:pickAll.filter(l=>status[l.key]==='picked').length,removed:pickAll.filter(l=>status[l.key]==='removed').length,all:pickAll.length};
+ const pickShown=pickAll.filter(l=>(pickTab==='all'||(pickTab==='todo'?!status[l.key]:status[l.key]===pickTab))&&(!query.trim()||matches(l,query)));
+ const pickGroups=[];for(const l of pickShown){if(pickGroups.at(-1)?.brand!==l.brand)pickGroups.push({brand:l.brand,lines:[]});pickGroups.at(-1).lines.push(l);}
+ const pickUnits=pickAll.filter(l=>status[l.key]!=='removed').reduce((n,l)=>n+qtyOf(l),0),pickedUnits=pickAll.filter(l=>status[l.key]==='picked').reduce((n,l)=>n+qtyOf(l),0);
  const groups=[];for(const l of shown){if(groups.at(-1)?.brand!==l.brand)groups.push({brand:l.brand,lines:[]});groups.at(-1).lines.push(l);}
- const totals=metros.map(m=>{const list=lines.filter(l=>l.metro===m&&visible(l));return {metro:m,lines:list.filter(l=>qtyOf(l)>0).length,units:list.reduce((n,l)=>n+qtyOf(l),0),review:list.filter(l=>decisions[l.key]?.review).length,bo:list.filter(l=>l.boNow).length,value:list.reduce((n,l)=>n+(l.cost??0)*qtyOf(l),0),priced:list.filter(l=>qtyOf(l)>0).every(l=>l.cost!=null),decided:list.filter(l=>decisions[l.key]).length,total:list.length};});
+ const totals=metros.map(m=>{const list=lines.filter(l=>l.metro===m&&(mode==='pick'||visible(l))),toPick=list.filter(l=>keptOf(l)>0);return {metro:m,lines:toPick.length,units:list.reduce((n,l)=>n+keptOf(l),0),picked:toPick.filter(l=>status[l.key]==='picked').length,review:list.filter(l=>decisions[l.key]?.review).length,bo:list.filter(l=>l.boNow).length,value:list.reduce((n,l)=>n+(l.cost??0)*keptOf(l),0),priced:toPick.every(l=>l.cost!=null),decided:list.filter(l=>decisions[l.key]).length,total:list.length};});
  const setting=(k,v)=>setSettings(s=>({...s,[k]:v}));
  return <section className="comparison metro-panel" id="metro">
-  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaine{data.weeks.count>1?'s':''} complète{data.weeks.count>1?'s':''}){data.weeks.current?.map(c=><Fragment key={c.week}> · semaine du {dateLabel(c.week)} en cours ({c.metros.map(m=>`${m.metro} : ${m.days} jour${m.days>1?'s':''}`).join(', ')}), pas encore dans le calcul</Fragment>)}{data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify ({data.catalog.source==='shopify'?'lu dans Shopify':'export CSV'}) : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, mis à jour le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{lines.length>0&&<span className="metro-imports">{picker}{shopifyButton||catalogPicker}</span>}</div>
+  <div className="sectionhead"><div><h1>Commandes Metro{data&&<> — semaine du {dateLabel(data.week)}</>}</h1>{mode==='prepare'&&data?.weeks?.count>0&&<p className="footnote">Ventes du {dateLabel(data.weeks.first)} au {dateLabel(data.weeks.last)} ({data.weeks.count} semaine{data.weeks.count>1?'s':''} complète{data.weeks.count>1?'s':''}){data.weeks.current?.map(c=><Fragment key={c.week}> · semaine du {dateLabel(c.week)} en cours ({c.metros.map(m=>`${m.metro} : ${m.days} jour${m.days>1?'s':''}`).join(', ')}), pas encore dans le calcul</Fragment>)}{data.files?.[0]&&<> · dernier fichier : {data.files[0].name}</>}. Chaque fichier remplace les semaines qu’il couvre. {data.catalog?<>Catalogue Shopify ({data.catalog.source==='shopify'?'lu dans Shopify':'export CSV'}) : {data.catalog.count} variantes{data.catalog.priced?`, ${data.catalog.priced} avec coût`:''}, mis à jour le {new Date(data.catalog.importedAt).toLocaleDateString('fr-CA')}. {lines.filter(l=>l.cost!=null).length} lignes sur {lines.length} ont un coût.</>:<>Marques déduites des descriptions Metro; le catalogue Shopify donne les noms exacts et le coût de chaque produit.</>}</p>}</div>{mode==='prepare'&&lines.length>0&&<span className="metro-imports">{picker}{shopifyButton||catalogPicker}</span>}</div>
   {error&&<p role="alert" className="alert">{error}</p>}{notice&&<p role="status" className="demo">{notice}</p>}
   {data&&!lines.length&&<div className="monthly-empty"><p>Importez les rapports « Ventes Shop Santé » reçus de Metro chaque jeudi (fichiers ZRT_ZMPOSJ21_…CSV) : vous pouvez en sélectionner plusieurs à la fois, toutes semaines et tous Metros confondus. Tout autre fichier avec une ligne par Metro, produit et date est aussi accepté.</p>{picker}</div>}
   {lines.length>0&&<>
+   <div className="metro-modebar"><div className="segmented metro-mode" role="group" aria-label="Mode">{[['prepare','Préparer la commande'],['pick','Cueillette']].map(([id,label])=><button key={id} aria-pressed={mode===id} onClick={()=>setMode(id)}>{label}</button>)}</div>
+    <span className="metro-saved" role="status">{saving?.pending?'Enregistrement…':saving?.failed?'Non enregistré':saving?.savedAt?`Enregistré à ${timeLabel(saving.savedAt)}`:'Pas encore enregistré'}</span></div>
+   {mode==='prepare'&&<>
    <div className="metro-controls">
     <label>Jours couverts<input type="number" min="1" max="28" step="1" value={settings.coverageDays} onChange={e=>setting('coverageDays',+e.target.value)}/></label>
     <label>Délai de livraison (j)<input type="number" min="0" max="14" step="1" value={settings.leadDays} onChange={e=>setting('leadDays',+e.target.value)}/></label>
@@ -122,23 +144,39 @@ export default function MetroPanel(){
     <button className="primary" onClick={decide} disabled={!!busy}>{busy==='jev'?`Jev décide… ${progress?.done??0} / ${progress?.total??''}`:`Faire décider Jev (${scope})`}</button>
    </div>
    {data&&!data.jev&&<p className="footnote">Jev n’est accessible qu’une fois le site publié sur Netlify (AI Gateway). Ici, la règle est appliquée à sa place.</p>}
-   <div className="metro-cards">{totals.map(t=><button key={t.metro} aria-pressed={scope===t.metro} onClick={()=>setScope(t.metro)}><b>{t.metro}{filtered&&<em className="metro-filtered">filtré</em>}</b><span>{t.lines} produit{t.lines>1?'s':''} à commander · {t.units} unités{t.value>0&&<> · {t.priced?'':'≥ '}{money(t.value)}</>}</span><small>{t.decided?`Jev : ${t.decided}/${t.total}${t.review?` · ${t.review} à vérifier`:''}`:'Règle seulement'}{t.bo?` · ${t.bo} en BO probable`:''}</small></button>)}</div>
-   <div className="metro-search"><input type="search" placeholder={`Chercher un produit, une marque ou un code-barres (${scope})`} aria-label="Chercher un produit" value={query} onChange={e=>setQuery(e.target.value)}/>{filtered&&<span>{shown.length} produit{shown.length>1?'s':''} affiché{shown.length>1?'s':''} · {shown.reduce((n,l)=>n+qtyOf(l),0)} unités</span>}</div>
+   </>}
+   <div className="metro-cards">{totals.map(t=><button key={t.metro} aria-pressed={scope===t.metro} onClick={()=>setScope(t.metro)}><b>{t.metro}{mode==='prepare'&&filtered&&<em className="metro-filtered">filtré</em>}</b><span>{t.lines} produit{t.lines>1?'s':''} à commander · {t.units} unités{t.value>0&&<> · {t.priced?'':'≥ '}{money(t.value)}</>}</span><small>{mode==='pick'?`Cueillis : ${t.picked}/${t.lines}`:<>{t.decided?`Jev : ${t.decided}/${t.total}${t.review?` · ${t.review} à vérifier`:''}`:'Règle seulement'}{t.bo?` · ${t.bo} en BO probable`:''}</>}</small></button>)}</div>
+   {mode==='pick'&&<div className="pick">
+    <div className="pick-progress"><div><b>{pickCount.picked} / {pickCount.picked+pickCount.todo}</b> produits cueillis · {pickedUnits} / {pickUnits} unités{pickCount.removed?` · ${pickCount.removed} retiré${pickCount.removed>1?'s':''}`:''}</div><span><i style={{width:((pickCount.picked+pickCount.todo)?pickCount.picked/(pickCount.picked+pickCount.todo)*100:0)+'%'}}/></span></div>
+    <div className="segmented pick-tabs" role="group" aria-label="Lignes affichées">{[['todo','À cueillir'],['picked','Cueillis'],['removed','Retirés'],['all','Tout']].map(([id,label])=><button key={id} aria-pressed={pickTab===id} onClick={()=>setPickTab(id)}>{label} ({pickCount[id]})</button>)}</div>
+    <input className="pick-search" type="search" placeholder={`Chercher dans la cueillette (${scope})`} aria-label="Chercher dans la cueillette" value={query} onChange={e=>setQuery(e.target.value)}/>
+    {pickGroups.map(g=><section key={g.brand} className="pick-group"><h3>{g.brand}</h3>{g.lines.map(l=>{const st=status[l.key],q=qtyOf(l),was=plannedOf(l);return <article key={l.key} className={'pick-line'+(st?' '+st:'')}>
+     <button className="pick-check" aria-pressed={st==='picked'} disabled={st==='removed'} aria-label={(st==='picked'?'Marquer à cueillir : ':'Marquer cueilli : ')+l.name} onClick={()=>setLineStatus(l.key,st==='picked'?'':'picked')}>{st==='picked'?'✓':''}</button>
+     <div className="pick-info"><b>{l.name}</b>{l.variant&&<span>{l.variant}</span>}<small className="metro-sku">{l.sku}</small>{q!==was&&st!=='removed'&&<small className="pick-changed">prévu {was}</small>}{l.boNow&&<small className="metro-bo">BO probable</small>}</div>
+     {st==='removed'?<div className="pick-removed"><s>{q}</s><button onClick={()=>setLineStatus(l.key,'')}>Remettre</button></div>:<div className="pick-qty"><button aria-label="Une unité de moins" onClick={()=>setQty(l.key,q-1)} disabled={q<=0}>−</button><input type="number" inputMode="numeric" min="0" value={q} aria-label={'Quantité '+l.name} onChange={e=>setQty(l.key,e.target.value)}/><button aria-label="Une unité de plus" onClick={()=>setQty(l.key,q+1)}>+</button></div>}
+     {st!=='removed'&&<button className="pick-remove quiet-button" onClick={()=>setLineStatus(l.key,'removed')}>Retirer</button>}
+    </article>;})}</section>)}
+    {!pickShown.length&&<p className="footnote">{query?`Aucun produit de la cueillette ne correspond à « ${query} ».`:pickTab==='todo'&&pickCount.all?'Tout est cueilli ou retiré pour '+scope+'.':pickTab==='todo'?`Rien à cueillir pour ${scope}.`:'Aucune ligne.'}</p>}
+    <div className="pick-footer"><button onClick={()=>download(`commande-${scope.replace(/\W+/g,'-')}-${data.week}.csv`,orderCsv(lines.map(l=>({...l,qty:keptOf(l),status:status[l.key]||''})),scope))} disabled={!!busy}>Télécharger la commande ({scope})</button></div>
+   </div>}
+   {mode==='prepare'&&<>
+   <div className="metro-search"><input type="search" placeholder={`Chercher un produit, une marque ou un code-barres (${scope})`} aria-label="Chercher un produit" value={query} onChange={e=>setQuery(e.target.value)}/>{filtered&&<span>{shown.length} produit{shown.length>1?'s':''} affiché{shown.length>1?'s':''} · {shown.reduce((n,l)=>n+keptOf(l),0)} unités</span>}</div>
    <div className="metro-toolbar"><span className="metro-filters"><label className="metro-check"><input type="checkbox" checked={onlyReview} onChange={e=>setOnlyReview(e.target.checked)}/>À vérifier seulement</label><label className="metro-min">À commander plus grand que<input type="number" min="0" step="1" inputMode="numeric" placeholder="—" value={minQty} onChange={e=>setMinQty(e.target.value===''?'':String(Math.max(0,Math.floor(+e.target.value||0))))}/>{minQty!==''&&<button className="quiet-button" onClick={()=>setMinQty('')}>Retirer</button>}</label><label className="metro-min">Confiance Jev plus grande que<input type="number" min="0" max="99" step="5" inputMode="numeric" placeholder="—" value={minConf} onChange={e=>setMinConf(e.target.value===''?'':String(Math.min(99,Math.max(0,Math.floor(+e.target.value||0)))))}/>%{minConf!==''&&<button className="quiet-button" onClick={()=>setMinConf('')}>Retirer</button>}</label></span>
-    <span><button onClick={save} disabled={!!busy}>{busy==='save'?'Enregistrement…':'Enregistrer la commande'}</button> <button onClick={()=>download(`commande-${scope.replace(/\W+/g,'-')}-${data.week}.csv`,orderCsv(lines.map(l=>({...l,qty:qtyOf(l)})),scope))} disabled={!!busy}>Télécharger ({scope})</button></span></div>
+    <span><button onClick={()=>save()} disabled={!!busy}>{busy==='save'?'Enregistrement…':'Enregistrer la commande'}</button> <button onClick={()=>download(`commande-${scope.replace(/\W+/g,'-')}-${data.week}.csv`,orderCsv(lines.map(l=>({...l,qty:keptOf(l),status:status[l.key]||''})),scope))} disabled={!!busy}>Télécharger ({scope})</button></span></div>
    <div className="table-scroll"><table className="metro-table"><thead><tr><th scope="col">Produit</th><th scope="col">Semaines<small>vert : 4 dernières</small></th><th scope="col">Rythme<small>/ sem. (4 dern. · toutes)</small></th><th scope="col">Stock</th><th scope="col">Règle</th><th scope="col">Jev<small>choix · confiance</small></th><th scope="col">À commander</th></tr></thead>
-    <tbody>{groups.map(g=><Fragment key={g.brand}><tr className="metro-brand"><th scope="rowgroup" colSpan={7}>{g.brand}<small>{g.lines.length} produit{g.lines.length>1?'s':''} · {g.lines.reduce((n,l)=>n+qtyOf(l),0)} unités à commander{g.lines.some(l=>l.cost!=null)&&<> · {money(g.lines.reduce((n,l)=>n+(l.cost??0)*qtyOf(l),0))}</>}</small></th></tr>{g.lines.map((l,i)=>{const d=decisions[l.key],q=qtyOf(l),same=i>0&&g.lines[i-1].name===l.name&&l.variant;return <tr key={l.key} className={review(l)?'metro-review':''}>
+    <tbody>{groups.map(g=><Fragment key={g.brand}><tr className="metro-brand"><th scope="rowgroup" colSpan={7}>{g.brand}<small>{g.lines.length} produit{g.lines.length>1?'s':''} · {g.lines.reduce((n,l)=>n+keptOf(l),0)} unités à commander{g.lines.some(l=>l.cost!=null)&&<> · {money(g.lines.reduce((n,l)=>n+(l.cost??0)*keptOf(l),0))}</>}</small></th></tr>{g.lines.map((l,i)=>{const d=decisions[l.key],q=qtyOf(l),same=i>0&&g.lines[i-1].name===l.name&&l.variant;return <tr key={l.key} className={(review(l)?'metro-review':'')+(status[l.key]==='removed'?' metro-removed':'')}>
      <th scope="row">{same?<span className="metro-same">↳</span>:l.name}{l.variant&&<span className="metro-variant">{l.variant}</span>}<small className="metro-sku">{l.sku}{l.pack>1?` · caisse de ${l.pack}`:''}</small>{l.boNow?<small className="metro-bo">BO probable (aucun Metro ne l’a vendu la semaine dernière)</small>:l.ruptures>0&&<small className="metro-bo">{l.ruptures} semaine{l.ruptures>1?'s':''} de rupture probable</small>}{l.manual&&<small className="metro-bo">ajout manuel</small>}</th>
      <td><Spark history={l.history}/></td>
      <td title={l.rule}>{l.v4.toLocaleString('fr-CA')} · {l.v12.toLocaleString('fr-CA')}<small className={'metro-trend '+l.trend}>{TREND[l.trend]}</small></td>
      <td>{l.stock===null?'—':l.stock}{l.urgency!=='normale'&&<small className="negative">{l.urgency==='rupture'?'rupture proche':'urgent'}</small>}</td>
      <td title={l.rule}>{l.base}</td>
      <td title={d?.probabilities?Object.entries(d.probabilities).map(([k,p])=>`${LABEL[k]} (${l.candidates[k]}) : ${pct(p)}`).join('\n'):d?.note||''}>{d?.source==='jev'?<><b>{d.qty}</b><span className="metro-confidence"><i style={{width:pct(d.confidence??0)}}/></span><small>{d.label?LABEL[d.label]+' · ':''}{pct(d.confidence??0)}</small></>:d?<small>règle{d.note?' (Jev indisponible)':''}</small>:'—'}</td>
-     <td><input className="metro-qty" type="number" min="0" step={l.pack} value={q} aria-label={'Quantité '+(l.product||l.sku)} onChange={e=>setFinal(f=>({...f,[l.key]:Math.max(0,Math.round(+e.target.value||0))}))}/>{l.cost!=null&&<small className="metro-cost">{money(l.cost)} / u.{q>0?' · '+money(l.cost*q):''}</small>}</td>
+     <td>{status[l.key]==='removed'?<><small className="negative">Retiré de la commande</small><button className="quiet-button" onClick={()=>setLineStatus(l.key,'')}>Remettre</button></>:<><input className="metro-qty" type="number" min="0" step="1" value={q} aria-label={'Quantité '+(l.product||l.sku)} onChange={e=>setQty(l.key,e.target.value)}/>{status[l.key]==='picked'&&<small className="pick-changed">cueilli ✓</small>}{l.cost!=null&&<small className="metro-cost">{money(l.cost)} / u.{q>0?' · '+money(l.cost*q):''}</small>}</>}</td>
     </tr>;})}</Fragment>)}</tbody></table></div>
    {!shown.length&&<p className="footnote">{query?`Aucun produit vendu à ${scope} ne correspond à « ${query} ».`:confAbove!==null&&!planned.some(l=>l.metro===scope&&decisions[l.key]?.source==='jev')?`Jev n’a pas encore décidé pour ${scope} : lancez « Faire décider Jev » pour filtrer par confiance.`:above!==null||confAbove!==null?`Aucun produit de ${scope} ne correspond aux filtres.`:`Aucune ligne à vérifier pour ${scope}.`}</p>}
-   {elsewhere.length>0&&<div className="metro-elsewhere"><h3>Vendus ailleurs dans le réseau, jamais à {scope}</h3><ul>{elsewhere.map(l=><li key={l.sku}><span><b>{l.brand}</b> {l.name}{l.variant&&' — '+l.variant}<small className="metro-sku">{l.sku}</small></span><button onClick={()=>{setAdded(a=>[...a,{metro:scope,sku:l.sku}]);setFinal(f=>({...f,[scope+'|'+l.sku]:l.pack||1}));}}>Ajouter à {scope}</button></li>)}</ul></div>}
-   <details className="monthly-older"><summary>Comment Jev décide</summary><p className="footnote">Pour chaque produit, la règle de Vanier (outil de réappro) calcule une quantité : rythme moyen des 4 dernières semaines et de toutes les semaines circulaires (jeudi au mercredi; une semaine incomplète est ramenée à 7 jours, les semaines d’ouverture sont écartées) × jours couverts, ±15 % selon la tendance (à partir de 12 unités vendues), arrondie à la caisse la plus proche. Si le stock est connu : délai et sécurité compris, moins le stock, arrondie à la caisse supérieure. Une semaine à zéro très improbable au rythme du produit est une <b>rupture probable</b> (en orange dans le graphique) et n’entre pas dans le rythme : « BO » quand aucun Metro ne l’a vendu cette semaine-là, rayon vide quand seul ce Metro ne l’a pas vendu. Jev reçoit les semaines de ventes, les ruptures probables, le rythme du même produit dans les autres Metros, le coût unitaire (catalogue Shopify), le stock et le calcul, puis choisit entre <b>rien</b>, <b>1 caisse de moins</b>, <b>la règle</b> et <b>1 caisse de plus</b>. Il ne rédige rien : il donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Vous gardez le dernier mot : la quantité est modifiable avant l’enregistrement.</p></details>
+   {elsewhere.length>0&&<div className="metro-elsewhere"><h3>Vendus ailleurs dans le réseau, jamais à {scope}</h3><ul>{elsewhere.map(l=><li key={l.sku}><span><b>{l.brand}</b> {l.name}{l.variant&&' — '+l.variant}<small className="metro-sku">{l.sku}</small></span><button onClick={()=>{setAdded(a=>[...a,{metro:scope,sku:l.sku}]);setQty(scope+'|'+l.sku,1);}}>Ajouter à {scope}</button></li>)}</ul></div>}
+   <details className="monthly-older"><summary>Comment Jev décide</summary><p className="footnote">Pour chaque produit, la règle de Vanier (outil de réappro) calcule une quantité : rythme moyen des 4 dernières semaines et de toutes les semaines circulaires (jeudi au mercredi; une semaine incomplète est ramenée à 7 jours, les semaines d’ouverture sont écartées) × jours couverts, ±15 % selon la tendance (à partir de 12 unités vendues), en unités exactes (aucun arrondi à la caisse). Si le stock est connu : délai et sécurité compris, moins le stock. Une semaine à zéro très improbable au rythme du produit est une <b>rupture probable</b> (en orange dans le graphique) et n’entre pas dans le rythme : « BO » quand aucun Metro ne l’a vendu cette semaine-là, rayon vide quand seul ce Metro ne l’a pas vendu. Jev reçoit les semaines de ventes, les ruptures probables, le rythme du même produit dans les autres Metros, le coût unitaire (catalogue Shopify), le stock et le calcul, puis choisit entre <b>rien</b>, <b>un peu moins</b>, <b>la règle</b> et <b>un peu plus</b> (écart d’environ 15 %, au moins 1 unité). Il ne rédige rien : il donne la probabilité de chaque option. Une confiance sous 60 % marque la ligne « à vérifier ». Vous gardez le dernier mot : la quantité est modifiable, et chaque changement est enregistré automatiquement.</p></details>
+   </>}
   </>}
  </section>;
 }
