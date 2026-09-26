@@ -241,3 +241,36 @@ test('factures : lecture du PDF « Commande interne », rapprochement par nom, s
  // Without invoices nor sales since the count, the counted stock is used as is.
  assert.equal(planLines(W.map(w=>row('A','0628176604411',w,7)),S,'2026-09-26',catalog,{A:{items:{'628176604411':5},asOf:'2026-09-23'}})[0].stockCounted,null);
 });
+
+test('rapprochement par nom : mêmes mots à la forme près, jamais un autre produit, une autre saveur ni un autre format',async()=>{
+ const {nameMatcher}=await import('../lib/metro/catalog.js');
+ // A fictitious catalog. Each check is the title of an invoice or a stock file.
+ const m=nameMatcher({
+  whey:{brand:'Atlas',product:'Atlas - Whey-Z 2lbs',variant:'Vanille'},
+  creatine:{brand:'Atlas',product:'Atlas - Créatine - 400g',variant:''},
+  beach:{brand:'Boréal',product:'Boréal - Sunset - 180g',variant:'Pêche'},
+  beachplus:{brand:'Boréal',product:'Boréal - Sunset+ - 180g',variant:'Pêche'},
+  kool:{brand:'Boréal',product:'Boréal - Pump - 429g',variant:'Punch Tropical'},
+  bars:{brand:'Boréal',product:'Boréal - Barre Chocolatée - 75g',variant:'Chocolat Blanc'},
+  cookies:{brand:'Boréal',product:'Boréal - Biscuits - 60g',variant:'Biscuits et Crème'},
+  citrulline:{brand:'Atlas',product:'Atlas – Citrulline – 300g',variant:'Lime'},
+  counter:{brand:'Atlas',product:'Atlas - Compteur - Facebook / Instagram',variant:'Instagram'},
+  belt:{brand:'Atlas',product:'Atlas - Ceinture 7mm',variant:'Noir / Grand'},
+  twin1:{brand:'Atlas',product:'Atlas - Gourde - 1L',variant:'Rose'},twin2:{brand:'Atlas',product:'Atlas - Gourde 1 L',variant:'rose'}});
+ const check=titles=>titles.map(m);
+ // The same words, in another form: plural, feminine, spaced unit, word order, « & » / « et », dashes.
+ assert.deepEqual(check(['Boréal - Barres Chocolatées - 75 g — Blanc Chocolat','Boréal - Biscuits - 60g — Biscuits & Crème','Atlas – Citrulline – 300g — Lime','Atlas - Citrulline - 300 g — lime','Atlas - Whey-Z - 2 lb — Vanille']),
+  ['bars','cookies','citrulline','citrulline','whey']);
+ // « Dernière Chance » added to the title since (clearance): the same article.
+ const cleared=nameMatcher({last:{brand:'Atlas',product:'Atlas - Oméga 3 - 90 capsules - Dernière Chance!',variant:''}});
+ assert.deepEqual(['Atlas - Oméga 3 - 90 capsules','Atlas - Oméga 3 - 60 capsules','Atlas - Oméga 6 - 90 capsules'].map(cleared),['last',null,null]);
+ // One word apart is another article: product (Casein-Z, Glutamine, Sunset+), flavour (Punch), size (Très Grand).
+ assert.deepEqual(check(['Atlas - Casein-Z 2lbs — Vanille','Atlas - Glutamine - 400g','Boréal - Pump - 429g — Punch','Atlas - Ceinture 7mm — Noir / Très Grand','Atlas - Créatine - 1000g']),[null,null,null,null,null]);
+ // « + » counts, in the loose step too: Sunset is not Sunset+ even when Sunset is missing from the catalog.
+ const plus=nameMatcher({beachplus:{brand:'Boréal',product:'Boréal - Sunset+ - 180g',variant:'Pêche'}});
+ assert.deepEqual(['Boréal - Sunset - 180g — Pêche','Boréal - Sunset + - 180 g — Pêche'].map(plus),[null,'beachplus']);
+ // Product and variant are compared each on its own: the variant word may not come from the product.
+ assert.equal(m('Atlas - Compteur - Facebook / Instagram — Facebook'),null);
+ // Two products with the same words: neither is chosen (the exact name still is).
+ assert.deepEqual(check(['Atlas - Gourde 1L — Rose','Atlas - Gourde - 1L — Rose']),[null,'twin1']);
+});
