@@ -9,6 +9,7 @@ import {validOrder} from '@/lib/metro/order';
 import {validCatalog} from '@/lib/metro/catalog';
 import {catalogPage,shopifyClient} from '@/lib/metro/shopify';
 import {matchStock,validStockRows} from '@/lib/metro/stock';
+import {matchInvoice,validInvoice} from '@/lib/metro/invoice';
 export const dynamic='force-dynamic';
 export const maxDuration=60;
 const json=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
@@ -18,17 +19,19 @@ function jev(){try{return new TypeSafeClient({timeout:25000,retry:{maxRetries:1}
 async function catalog(db,user){const row=await db.prepare('SELECT document,imported_at FROM metro_catalog WHERE user_id=?').bind(user).first();return row?{...JSON.parse(row.document),importedAt:row.imported_at}:{items:null,importedAt:null};}
 // Shelf stock per Metro: {metro: {items, asOf, filename, matched, unmatched, importedAt}}.
 async function stocks(db,user){const r=await db.prepare('SELECT metro,document,imported_at FROM metro_stock WHERE user_id=?').bind(user).all();return Object.fromEntries(r.results.map(x=>[x.metro,{...JSON.parse(x.document),importedAt:x.imported_at}]));}
+// Invoices of the last 26 weeks, newest first.
+async function invoices(db,user){const r=await db.prepare('SELECT number,metro,invoice_date,document,imported_at FROM metro_invoices WHERE user_id=? AND invoice_date>=? ORDER BY invoice_date DESC,number DESC').bind(user,addDays(localDate(new Date()),-182)).all();return r.results.map(x=>({number:x.number,metro:x.metro,date:x.invoice_date,...JSON.parse(x.document),importedAt:x.imported_at}));}
 function settingsFrom(url){const n=k=>url.searchParams.has(k)?Number(url.searchParams.get(k)):DEFAULT_SETTINGS[k];return validSettings({coverageDays:n('coverageDays'),leadDays:n('leadDays'),safety:n('safety')});}
 
 export async function GET(req){
  const user=await currentUser(req);if(!user)return json({error:'Connexion requise.'},401);
  let settings;try{settings=settingsFrom(new URL(req.url));}catch(e){return json({error:e.message},400);}
  try{const db=database(),today=localDate(new Date()),week=planWeek(today),data=await sales(db,user);
-  const [saved,known,shelf]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user),stocks(db,user)]);
+  const [saved,known,shelf,delivered]=await Promise.all([db.prepare('SELECT document,saved_at FROM metro_orders WHERE user_id=? AND week=?').bind(user,week).first(),catalog(db,user),stocks(db,user),invoices(db,user)]);
   // Complete weeks feed the rule; a week still in progress is shown apart.
   const all=[...new Set(data.rows.map(r=>r.week))].sort(),weeks=all.filter(w=>addDays(w,6)<today),current=all.filter(w=>addDays(w,6)>=today);
   const progress=current.map(w=>({week:w,metros:[...new Map(data.rows.filter(r=>r.week===w).map(r=>[r.metro,r.days])).entries()].map(([metro,days])=>({metro,days}))}));
-  return json({week,settings,lines:planLines(data.rows,settings,today,known.items,shelf),stocks:Object.fromEntries(Object.entries(shelf).map(([m,v])=>[m,{asOf:v.asOf,filename:v.filename,matched:v.matched,unmatched:v.unmatched,negative:Object.values(v.items).filter(x=>x<0).length,importedAt:v.importedAt}])),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)?addDays(weeks.at(-1),6):null,count:weeks.length,current:progress},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
+  return json({week,settings,lines:planLines(data.rows,settings,today,known.items,shelf,delivered),invoices:delivered.slice(0,30).map(i=>({number:i.number,metro:i.metro,date:i.date,lines:i.lines,items:i.units,total:i.total,matched:i.matched,unmatched:i.unmatched.length,counted:!!shelf[i.metro]?.asOf&&i.date>shelf[i.metro].asOf,importedAt:i.importedAt})),stocks:Object.fromEntries(Object.entries(shelf).map(([m,v])=>[m,{asOf:v.asOf,filename:v.filename,matched:v.matched,unmatched:v.unmatched,negative:Object.values(v.items).filter(x=>x<0).length,importedAt:v.importedAt}])),files:data.files,catalog:known.items?{source:known.source||'export',count:Object.keys(known.items).length,priced:Object.values(known.items).filter(v=>v.cost!=null).length,importedAt:known.importedAt}:null,importedAt:data.importedAt,weeks:{first:weeks[0]||null,last:weeks.at(-1)?addDays(weeks.at(-1),6):null,count:weeks.length,current:progress},order:saved?{...JSON.parse(saved.document),savedAt:saved.saved_at}:null,jev:!!jev(),shopify:!!process.env.SHOPIFY_ADMIN_ACCESS_TOKEN});
  }catch{return json({error:'Données Metro indisponibles.'},503);}
 }
 export async function POST(req){
@@ -60,6 +63,21 @@ export async function POST(req){
    await db.prepare('INSERT INTO metro_stock(user_id,metro,document,imported_at) VALUES(?,?,?,?) ON CONFLICT(user_id,metro) DO UPDATE SET document=excluded.document,imported_at=excluded.imported_at').bind(user,metro,JSON.stringify({items,asOf,filename,matched,unmatched:unmatched.length}),importedAt).run();
    return json({matched,unmatched:unmatched.length,unmatchedSample:unmatched.slice(0,5),negative:Object.values(items).filter(x=>x<0).length});
   }
+  // An invoice « Commande interne » (read from the PDF in the browser).
+  if(body.action==='invoice'){
+   let inv;try{inv=validInvoice(body.invoice);}catch(e){return json({error:e.message},400);}
+   const known=await catalog(db,user);if(!known.items)return json({error:'Lisez d’abord le catalogue Shopify : il relie les produits de la facture aux codes-barres Metro.'},400);
+   const {items,unmatched}=matchInvoice(inv.lines,known.items),importedAt=new Date().toISOString();
+   const doc={items,matched:inv.lines.length-unmatched.length,unmatched:unmatched.slice(0,200),lines:inv.lines.length,units:inv.lines.reduce((n,l)=>n+l.qty,0),total:Math.round(inv.lines.reduce((n,l)=>n+l.total,0)*100)/100};
+   await db.prepare('INSERT INTO metro_invoices(user_id,number,metro,invoice_date,document,imported_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,number) DO UPDATE SET metro=excluded.metro,invoice_date=excluded.invoice_date,document=excluded.document,imported_at=excluded.imported_at').bind(user,inv.number,inv.metro,inv.date,JSON.stringify(doc),importedAt).run();
+   const asOf=(await stocks(db,user))[inv.metro]?.asOf||null;
+   return json({number:inv.number,metro:inv.metro,date:inv.date,lines:doc.lines,units:doc.units,matched:doc.matched,unmatched:unmatched.length,unmatchedSample:unmatched.slice(0,5),asOf,counted:!!asOf&&inv.date>asOf});
+  }
+  if(body.action==='invoice-delete'){
+   if(typeof body.number!=='string'||!/^\d{4,20}$/.test(body.number))return json({error:'Facture invalide.'},400);
+   await db.prepare('DELETE FROM metro_invoices WHERE user_id=? AND number=?').bind(user,body.number).run();
+   return json({deleted:body.number});
+  }
   if(body.action==='catalog'){
    let items;try{items=validCatalog(body.items);}catch(e){return json({error:e.message},400);}
    const importedAt=new Date().toISOString();
@@ -70,7 +88,7 @@ export async function POST(req){
   if(body.action==='decide'){
    let settings;try{settings=validSettings(body.settings);}catch(e){return json({error:e.message},400);}
    if(!Array.isArray(body.keys)||!body.keys.length||body.keys.length>CHUNK||body.keys.some(k=>typeof k!=='string'))return json({error:'Lignes invalides.'},400);
-   const [data,known,shelf]=await Promise.all([sales(db,user),catalog(db,user),stocks(db,user)]),wanted=new Set(body.keys),lines=planLines(data.rows,settings,today,known.items,shelf).filter(l=>wanted.has(l.key));
+   const [data,known,shelf,delivered]=await Promise.all([sales(db,user),catalog(db,user),stocks(db,user),invoices(db,user)]),wanted=new Set(body.keys),lines=planLines(data.rows,settings,today,known.items,shelf,delivered).filter(l=>wanted.has(l.key));
    return json({decisions:await decideLines(jev(),lines,settings)});
   }
   if(body.action==='save'){

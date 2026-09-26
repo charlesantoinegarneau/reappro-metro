@@ -205,3 +205,39 @@ test('stock en rayon : fichier de réappro, rapprochement par SKU ou par nom, n�
  assert.ok(known.coverage.regle>known.coverage.aucune&&known.coverage.hausse>=known.coverage.regle);
  assert.ok(known.coverage.aucune>0,'le rayon seul couvre une partie de la période');
  assert.equal(jevRequest([known],S).state.lignes.l0.chances_de_couvrir.regle,Math.round(known.coverage.regle*100)+' %')});
+
+test('factures : lecture du PDF « Commande interne », rapprochement par nom, stock estimé depuis le décompte',async()=>{
+ const {parseInvoiceText,matchInvoice,validInvoice,metroOf}=await import('../lib/metro/invoice.js');
+ // A fictitious invoice as pdf.js reads it: wrapped titles, page footers, repeated headers.
+ const text=['Invoice','Commande interne — détails des coûts','1234567','2026-09-22 10 h 05 min 00 s','SUCCURSALE','Boutique test','CLIENT','Métro Ste-Foy','1 rue Test','Détails 3 lignes • 9 items','Image Qty Item Coût / item Total ligne',
+  '6','Nova Pharma - Whey - 2lb — Vanille','Nova Pharma Taxable 10,00 $ 60,00 $',
+  '2','Grenade - Barre protéinée - 60g — Biscuits et','Crème','Grenade Taxable','3,50 $ 7,00 $',
+  '01/01/2026 10:00 Invoice - 1234567','about:blank 1/2','Image Qty Item Coût / item Total ligne',
+  '1','Marque X - Produit inconnu','Marque X Non taxable 1 000,00 $ 1 000,00 $',
+  'Sous-total 1 067,00 $','Total à payer 1 067,00 $'];
+ const inv=parseInvoiceText(text);
+ assert.deepEqual([inv.number,inv.date,inv.client,inv.metro],['1234567','2026-09-22','Métro Ste-Foy','Ste-Foy']);
+ assert.deepEqual(inv.lines.map(l=>[l.qty,l.title,l.brand,l.total]),[[6,'Nova Pharma - Whey - 2lb — Vanille','Nova Pharma',60],[2,'Grenade - Barre protéinée - 60g — Biscuits et Crème','Grenade',7],[1,'Marque X - Produit inconnu','Marque X',1000]]);
+ assert.throws(()=>parseInvoiceText(text.map(l=>l.replace('3 lignes • 9','4 lignes • 10'))),/partiellement/);
+ assert.throws(()=>parseInvoiceText(['Facture fournisseur']),/Commande interne/);
+ assert.equal(metroOf('Metro St-Augustin'),'St-Augustin');assert.equal(metroOf('IGA'),null);
+ assert.throws(()=>validInvoice({...inv,metro:null}),/invalide/);
+ // Titles differ slightly from Shopify's (« Whey - 2lb » / « Whey 2 lbs », case): matched; a different flavour is not.
+ const catalog={'628176604411':{brand:'Nova Pharma',product:'Nova Pharma - Whey 2 lbs',variant:'vanille',sku:''},'111':{brand:'Grenade',product:'Grenade - Barre protéinée - 60g',variant:'Biscuits et Crème',sku:''},'222':{brand:'Grenade',product:'Grenade - Barre protéinée - 60g',variant:'Caramel',sku:''}};
+ const m=matchInvoice(inv.lines,catalog);
+ assert.deepEqual(m.items,{'628176604411':6,'111':2});assert.deepEqual(m.unmatched,['Marque X - Produit inconnu']);
+ // Another format is another product.
+ const {nameMatcher}=await import('../lib/metro/catalog.js');
+ const sizes=nameMatcher({a:{brand:'Allmax',product:'Allmax - Isoflex - 2lb',variant:'Vanille'},b:{brand:'Allmax',product:'Allmax - Creatine - 400g',variant:''}});
+ assert.deepEqual(['Allmax - Isoflex - 5lbs — Vanille','Allmax - Creatine - 1000g','Allmax - Isoflex 2 lbs — Vanille','Allmax - Isoflex - 2lb — Chocolat'].map(sizes),[null,null,'a',null]);
+ // Counted 5 on Sunday Sep 20 (week of Thursday Sep 17). An invoice that day is already in the count;
+ // the one of Sep 22 adds 6. Sold since: 3 of the 7 of that week (Mon–Wed) + 2 this week = 5.
+ const W=WEEKS.slice(-8),sales=[...W.map(w=>row('A','0628176604411',w,7)),row('A','0628176604411','2026-09-24',2,{days:2})];
+ const stocks={A:{items:{'628176604411':5},asOf:'2026-09-20'}},invoices=[{metro:'A',date:'2026-09-22',items:m.items},{metro:'A',date:'2026-09-20',items:{'628176604411':10}},{metro:'B',date:'2026-09-23',items:{'628176604411':50}}];
+ const line=planLines(sales,S,'2026-09-26',catalog,stocks,invoices)[0];
+ assert.deepEqual([line.stock,line.stockCounted,line.delivered,line.soldSince],[6,5,6,5]);
+ assert.match(line.rule,/stock estimé 6 = compté 5 \+ livré 6 − vendu 5/);
+ assert.equal(line.base,Math.ceil(1*10*1.25-6),'la règle part du stock estimé');
+ // Without invoices nor sales since the count, the counted stock is used as is.
+ assert.equal(planLines(W.map(w=>row('A','0628176604411',w,7)),S,'2026-09-26',catalog,{A:{items:{'628176604411':5},asOf:'2026-09-23'}})[0].stockCounted,null);
+});
