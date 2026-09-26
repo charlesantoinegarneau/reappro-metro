@@ -108,3 +108,4 @@
 .pick-footer{margin:18px 0}
 @media(max-width:650px){.pick-line{grid-template-columns:48px 1fr auto;grid-template-areas:"check info info" ". remove qty";gap:8px 10px}.pick-check{grid-area:check}.pick-info{grid-area:info}.pick-qty,.pick-removed{grid-area:qty;justify-content:flex-end}.pick-removed{grid-column:2/4}.pick-remove{grid-area:remove;justify-self:start;min-height:32px!important;padding:0!important}.metro-modebar .segmented{display:flex;width:100%}.metro-mode button{flex:1}}
 .metro-cover{display:block;font-size:11px;color:#255940!important}
+.metro-invoices{list-style:none;margin:0;padding:0}.metro-invoices li{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line,#e5e7e3);font-size:13px}.metro-invoices em{font-style:normal;color:var(--muted)}
