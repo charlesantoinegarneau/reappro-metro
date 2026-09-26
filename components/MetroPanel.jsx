@@ -2,7 +2,7 @@
 import {Fragment,useEffect,useMemo,useRef,useState} from 'react';
 import {addDays,combineFiles,readSalesFile} from '@/lib/metro/sales';
 import {orderCsv} from '@/lib/metro/order';
-import {readCatalogFile} from '@/lib/metro/catalog';
+import {addVariant,readCatalogFile} from '@/lib/metro/catalog';
 import {readStockFile,stockDate} from '@/lib/metro/stock';
 import {readInvoicePdf} from '@/lib/metro/invoice';
 
@@ -108,7 +108,7 @@ export default function MetroPanel(){
  async function syncShopify(){
   setBusy('shopify');setError('');setNotice('');
   try{let cursor=null,items={},pages=0;
-   do{const j=await api('',{action:'shopify-page',cursor});Object.assign(items,j.items);cursor=j.next;pages++;setProgress({done:Object.keys(items).length,total:null,pages});}while(cursor&&pages<200);
+   do{const j=await api('',{action:'shopify-page',cursor});for(const [code,v] of Object.entries(j.items))addVariant(items,code,v);cursor=j.next;pages++;setProgress({done:Object.keys(items).length,total:null,pages});}while(cursor&&pages<200);
    const j=await api('',{action:'catalog',items,source:'shopify'});
    setNotice(`Catalogue lu dans Shopify : ${j.count} variantes avec code-barres, dont ${j.priced} avec un coût. Relancez Jev pour qu’il en tienne compte.`);await load();
   }catch(e){setError(e.message);}finally{setBusy('');setProgress(null);}

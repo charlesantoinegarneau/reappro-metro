@@ -274,3 +274,51 @@ test('rapprochement par nom : mêmes mots à la forme près, jamais un autre pro
  // Two products with the same words: neither is chosen (the exact name still is).
  assert.deepEqual(check(['Atlas - Gourde 1L — Rose','Atlas - Gourde - 1L — Rose']),[null,'twin1']);
 });
+
+test('facture imprimée par le navigateur : pieds de page et lignes coupées par un saut de page',async()=>{
+ const {parseInvoiceText}=await import('../lib/metro/invoice.js');
+ // A fictitious invoice as pdf.js reads it once printed: each page ends with the
+ // tool's address and « Page n sur m »; a line cut by the page break comes in
+ // pieces, glued to their neighbours.
+ const footer=n=>['https://outil.example.com/a…boutique.myshopify.com&timestamp=1 2026-09-21 09:00',`Page ${n} sur 4`];
+ const text=['Invoice','Commande interne — détails des coûts','7654321','2026-09-20 09:00:00','CLIENT','Métro Plus St-Augustin','Détails 4 lignes • 33 items','Image Qty Item Coût / item Total ligne',
+  // The quantity went to the next page, glued to the end of the title.
+  'Atlas - Eau protéinée de',...footer(1),'7 collagène (500ml) —','Framboise','Atlas Taxable','3,00 $ 21,00 $',
+  // The quantity went to the next page, glued to the brand and the prices.
+  'Boréal - Barre - 55g','— Caramel',...footer(2),'12 Boréal Taxable 2,50 $ 30,00 $',
+  // The prices stayed glued to the title, the brand went to the next page; the next line has the same quantity and price.
+  '7','Atlas - Chips - 50g','— Ranch 2,00 $ 14,00 $',...footer(3),'Atlas Taxable','7','Atlas - Chips - 50g','— Nacho','Atlas Taxable','2,00 $ 14,00 $',
+  'Sous-total 79,00 $',...footer(4)];
+ const inv=parseInvoiceText(text);
+ assert.deepEqual(inv.lines.map(l=>[l.qty,l.title,l.brand,l.cost,l.total]),[
+  [7,'Atlas - Eau protéinée de collagène (500ml) — Framboise','Atlas',3,21],
+  [12,'Boréal - Barre - 55g — Caramel','Boréal',2.5,30],
+  [7,'Atlas - Chips - 50g — Ranch','Atlas',2,14],
+  [7,'Atlas - Chips - 50g — Nacho','Atlas',2,14]]);
+ // Quantity × cost ≠ total: the line is refused rather than guessed.
+ assert.throws(()=>parseInvoiceText(text.map(l=>l.replace('30,00 $','31,00 $'))),/illisible/);
+});
+
+test('code-barres partagé par plusieurs variantes Shopify : seul le même article y mène',async()=>{
+ const {addVariant,validCatalog,nameMatcher}=await import('../lib/metro/catalog.js');
+ const {matchStock}=await import('../lib/metro/stock.js');
+ // Four fictitious variants carry barcode 100, read over two pages: the article,
+ // its box of 12 and another flavour (entered by mistake), then the free version, read last.
+ const v=(sku,product,variant)=>({brand:'Atlas',product,variant,cost:1,sku});
+ const page1={},page2={};
+ addVariant(page1,'100',v('A-REG','Atlas - Eau - 500ml','Bleu'));addVariant(page1,'100',v('A-BOX','Atlas - Eau - 500ml (12x)','Bleu'));
+ addVariant(page2,'100',v('A-RED','Atlas - Eau - 500ml','Rouge'));addVariant(page2,'100',v('A-FREE','Atlas - Eau - 500ml - Gratuit!','Bleu'));
+ addVariant(page2,'200',v('B-LOT','Atlas - Barre - 60g - Dernière Chance! 01/2026','Vanille 01/2026'));addVariant(page2,'200',v('B-REG','Atlas - Barre - 60g','Vanilles'));
+ const items={};for(const page of [page1,page2])for(const [code,x] of Object.entries(page))addVariant(items,code,x);
+ const catalog=validCatalog(items);
+ // The last one read stays the article shown; the others are kept aside.
+ assert.equal(catalog['100'].product,'Atlas - Eau - 500ml - Gratuit!');
+ assert.deepEqual(catalog['100'].also.map(a=>a.sku),['A-REG','A-BOX','A-RED']);
+ // Stock: the article and its free version add up (received as one, sold as the other); the box and the other flavour lead nowhere.
+ const m=matchStock([{sku:'A-REG',product:'',stock:-5},{sku:'A-FREE',product:'',stock:9},{sku:'A-BOX',product:'',stock:2},{sku:'A-RED',product:'',stock:3},{sku:'B-REG',product:'',stock:4}],catalog);
+ assert.deepEqual(m.items,{'100':4,'200':4});assert.deepEqual(m.unmatched,['A-BOX','A-RED']);
+ // Invoice titles: the same.
+ const byName=nameMatcher(catalog);
+ assert.deepEqual(['Atlas - Eau - 500ml — Bleu','Atlas - Eau - 500ml (12x) — Bleu','Atlas - Eau - 500ml — Rouge','Atlas - Barre - 60g — Vanille'].map(byName),['100',null,null,'200']);
+ assert.throws(()=>validCatalog({'100':{...catalog['100'],also:[{sku:1}]}}),/invalide/);
+});
